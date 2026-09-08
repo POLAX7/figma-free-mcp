@@ -24,6 +24,32 @@ The initial compatibility target is the `fig-kiwi` canvas signature. The format
 is an undocumented Figma implementation detail, so compatibility is deliberately
 versioned and unsupported variants fail explicitly instead of being guessed.
 
+## Maintained fork changes and Figma Inspector
+
+This maintained fork adds the local component-instance resolution used by the
+[Figma Inspector workflow](https://github.com/POLAX7/figma-inspector). The
+Inspector repository contains the inspection decisions, AST pruning, cache and
+rate-limit handling, while this repository provides the local `.fig` extraction
+and MCP context consumed by that workflow.
+
+The changes in this fork include:
+
+- Preserve an instance's original `node_id` and `main_component_id` from
+  `symbolData`, while keeping the raw `childIds` unchanged for diagnostics.
+- Resolve local `SYMBOL` definitions into per-instance `resolvedChildIds`,
+  including nested components with cycle protection and isolated IDs when the
+  same component is used more than once.
+- Apply text overrides by their `guidPath` target instead of relying on the
+  order in which Figma stores overrides. Both `textData.characters` and the
+  compact override form are supported.
+- Make node context traversal and bounded inspection use the resolved children,
+  and report the component identity and whether the instance was expanded.
+- Add normalization tests covering local expansion, nested cycles, repeated
+  component instances, and target-specific text overrides.
+
+These changes keep offline inspection local-first; the Inspector workflow only
+uses a cloud fallback when the local bundle cannot resolve the component.
+
 ## Commands
 
 ```sh
