@@ -13,6 +13,7 @@ export interface AgentNode {
   resolvedChildIds?: string[];
   resolvedComponentId?: string;
   instanceTextOverrides?: string[];
+  instanceTextOverridesByNodeId?: Record<string, string>;
   zIndex: number;
   text?: string;
   textSegments?: TextSegment[];
@@ -86,6 +87,7 @@ export function expandLocalInstances(document: AgentDocument): AgentDocument {
     const textOverrides = instance.instanceTextOverrides ?? [];
     const sourceTexts = descendantIds(document, component.childIds).map((id) => document.nodesById[id]).filter((node): node is AgentNode => Boolean(node?.text !== undefined));
     const textBySourceId = new Map(sourceTexts.map((node, index) => [node.id, textOverrides[index]]));
+    Object.entries(instance.instanceTextOverridesByNodeId ?? {}).forEach(([sourceId, text]) => textBySourceId.set(sourceId, text));
     const clone = (sourceId: string, parentId: string): string => {
       const source = document.nodesById[sourceId]!;
       const id = `${instance.id}::${source.id}`;
@@ -166,13 +168,15 @@ function normalizeNode(change: Record<string, unknown>, zIndex: number, assetPat
   const bindings = variableBindings(change);
   const symbolData = record(change.symbolData);
   const symbolId = record(symbolData?.symbolID);
-  const instanceTextOverrides = Array.isArray(symbolData?.symbolOverrides) ? symbolData.symbolOverrides.flatMap((override) => {
-    const textData = record(record(override)?.textData);
-    return typeof textData?.characters === 'string' ? [textData.characters] : [];
-  }) : [];
+  const overrides = Array.isArray(symbolData?.symbolOverrides) ? symbolData.symbolOverrides : [];
+  const instanceTextOverrides = overrides.flatMap((override) => { const text = overrideText(override); return text === undefined ? [] : [text]; });
+  const instanceTextOverridesByNodeId = Object.fromEntries(overrides.flatMap((override) => {
+    const targetId = overrideTargetId(override); const text = overrideText(override);
+    return targetId && text !== undefined ? [[targetId, text]] : [];
+  }));
   return {
     id, node_id: id, name: typeof change.name === 'string' ? change.name : id, type: typeof change.type === 'string' ? change.type : 'UNKNOWN', childIds: [], zIndex,
-    ...(symbolId ? { resolvedComponentId: idFromGuid(symbolId, zIndex), main_component_id: guidId(symbolId), instanceTextOverrides } : {}),
+    ...(symbolId ? { resolvedComponentId: idFromGuid(symbolId, zIndex), main_component_id: guidId(symbolId), instanceTextOverrides, ...(Object.keys(instanceTextOverridesByNodeId).length ? { instanceTextOverridesByNodeId } : {}) } : {}),
     ...(typeof textData?.characters === 'string' ? { text: textData.characters } : {}), ...(segments ? { textSegments: segments } : {}), ...(textLayout && Object.keys(textLayout).length ? { textLayout } : {}),
     ...(change.size === undefined ? {} : { bounds: change.size }), ...(change.transform === undefined ? {} : { transform: change.transform }),
     ...(typeof change.visible === 'boolean' ? { visible: change.visible } : {}), ...(typeof change.opacity === 'number' ? { opacity: change.opacity } : {}), ...(change.blendMode === undefined ? {} : { blendMode: change.blendMode }), ...(typeof change.mask === 'boolean' ? { mask: change.mask } : {}), ...(typeof change.frameMaskDisabled === 'boolean' ? { frameMaskDisabled: change.frameMaskDisabled } : {}), constraints: { horizontal: change.horizontalConstraint, vertical: change.verticalConstraint },
@@ -243,5 +247,16 @@ export function hashToHex(value: unknown): string | undefined {
 }
 function idFromGuid(value: unknown, fallback: number): string { const guid = record(value); return typeof guid?.sessionID === 'number' && typeof guid.localID === 'number' ? `${guid.sessionID}:${guid.localID}` : `index:${fallback}`; }
 function guidId(value: unknown): string | undefined { const guid = record(value); return typeof guid?.sessionID === 'number' && typeof guid.localID === 'number' ? `${guid.sessionID}:${guid.localID}` : undefined; }
+function overrideTargetId(value: unknown): string | undefined {
+  const guids = record(value)?.guidPath;
+  const entries = record(guids)?.guids;
+  return Array.isArray(entries) ? guidId(entries.at(-1)) : undefined;
+}
+function overrideText(value: unknown): string | undefined {
+  const override = record(value);
+  const textData = record(override?.textData) ?? record(override?.textDataValue);
+  if (typeof textData?.characters === 'string') return textData.characters;
+  return typeof override?.characters === 'string' ? override.characters : undefined;
+}
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function pick(value: Record<string, unknown>, keys: string[]): Record<string, unknown> { return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]])); }

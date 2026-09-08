@@ -77,6 +77,38 @@ describe('normalized document', () => {
     expect(texts).toEqual(['標題', '主按鈕']);
   });
 
+  test('maps text overrides by their guidPath target instead of array order', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 50, localID: 1 }, type: 'INSTANCE', symbolData: { symbolID: { sessionID: 60, localID: 1 }, symbolOverrides: [
+        { guidPath: { guids: [{ sessionID: 60, localID: 3 }] }, textData: { characters: 'Description override' } },
+        { guidPath: { guids: [{ sessionID: 60, localID: 2 }] }, textData: { characters: 'Title override' } }
+      ] } },
+      { guid: { sessionID: 60, localID: 1 }, type: 'SYMBOL' },
+      { guid: { sessionID: 60, localID: 2 }, type: 'TEXT', name: 'Title', parentIndex: 1, textData: { characters: 'Title' } },
+      { guid: { sessionID: 60, localID: 3 }, type: 'TEXT', name: 'Description', parentIndex: 1, textData: { characters: 'Description' } }
+    ]);
+    const expanded = expandLocalInstances(normalized);
+    const instance = expanded.nodesById['50:1']!;
+    const texts = (instance.resolvedChildIds ?? []).map((id) => expanded.nodesById[id]!.text);
+    expect(texts).toEqual(['Title override', 'Description override']);
+  });
+
+  test('scopes identical component child IDs independently for each instance', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 70, localID: 1 }, type: 'INSTANCE', symbolData: { symbolID: { sessionID: 80, localID: 1 } } },
+      { guid: { sessionID: 70, localID: 2 }, type: 'INSTANCE', symbolData: { symbolID: { sessionID: 80, localID: 1 } } },
+      { guid: { sessionID: 80, localID: 1 }, type: 'SYMBOL' },
+      { guid: { sessionID: 80, localID: 2 }, type: 'TEXT', parentIndex: 2, textData: { characters: 'Shared' } }
+    ]);
+    const expanded = expandLocalInstances(normalized);
+    const first = expanded.nodesById['70:1']!.resolvedChildIds ?? [];
+    const second = expanded.nodesById['70:2']!.resolvedChildIds ?? [];
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first[0]).not.toBe(second[0]);
+    expect(new Set(Object.keys(expanded.nodesById)).size).toBe(Object.keys(expanded.nodesById).length);
+  });
+
   test('builds stable IDs, hierarchy, and text context', () => {
     expect(document.nodesById['1:2']).toMatchObject({ id: '1:2', type: 'FRAME', childIds: ['1:3'] });
     expect(document.nodesById['1:3']).toMatchObject({ text: 'Hello', parentId: '1:2' });
