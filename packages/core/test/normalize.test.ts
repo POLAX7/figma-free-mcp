@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
-import { hashToHex, normalizeDocument, resolveNodeReference } from '../src/normalize/document.js';
+import { effectiveChildIds, expandLocalInstances, hashToHex, normalizeDocument, resolveNodeReference } from '../src/normalize/document.js';
 import { buildNodeContext } from '../src/context/node-context.js';
+import { inspectNode } from '../src/context/inspect-node.js';
 
 const document = normalizeDocument([
   { guid: { sessionID: 1, localID: 1 }, type: 'DOCUMENT', name: 'Document' },
@@ -9,6 +10,73 @@ const document = normalizeDocument([
 ]);
 
 describe('normalized document', () => {
+  test('exposes stable component metadata and resolved child access', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 10, localID: 1 }, type: 'INSTANCE', name: 'Alert', symbolData: { symbolID: { sessionID: 20, localID: 1 } } },
+      { guid: { sessionID: 20, localID: 1 }, type: 'SYMBOL', name: 'Alert Variant' },
+      { guid: { sessionID: 20, localID: 2 }, type: 'TEXT', name: 'Title', parentIndex: 1, textData: { characters: 'Title' } }
+    ]);
+    const expanded = expandLocalInstances(normalized);
+    const instance = expanded.nodesById['10:1']!;
+    expect(instance.node_id).toBe('10:1');
+    expect(instance.main_component_id).toBe('20:1');
+    expect(effectiveChildIds(instance)).toEqual(instance.resolvedChildIds);
+  });
+
+  test('stops nested expansion when a component cycle is encountered', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 1, localID: 1 }, type: 'INSTANCE', name: 'A', symbolData: { symbolID: { sessionID: 2, localID: 1 } } },
+      { guid: { sessionID: 2, localID: 1 }, type: 'SYMBOL', name: 'A Symbol' },
+      { guid: { sessionID: 2, localID: 2 }, type: 'INSTANCE', name: 'B', parentIndex: 1, symbolData: { symbolID: { sessionID: 2, localID: 1 } } }
+    ]);
+    const expanded = expandLocalInstances(normalized);
+    expect(Object.keys(expanded.nodesById).length).toBeLessThan(20);
+  });
+
+  test('reports component identity and expansion state in bounded inspection', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 30, localID: 1 }, type: 'INSTANCE', symbolData: { symbolID: { sessionID: 40, localID: 1 } } },
+      { guid: { sessionID: 40, localID: 1 }, type: 'SYMBOL' },
+      { guid: { sessionID: 40, localID: 2 }, type: 'TEXT', parentIndex: 1, textData: { characters: 'Label' } }
+    ]);
+    const node = expandLocalInstances(normalized).nodesById['30:1']!;
+    expect(inspectNode(expandLocalInstances(normalized), node).selection.component).toEqual({ type: 'INSTANCE', mainComponentId: '40:1', expanded: true });
+  });
+
+  test('expands an empty instance from its local symbol definition without changing raw children', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 10, localID: 1 }, type: 'INSTANCE', name: 'Alert', symbolData: { symbolID: { sessionID: 20, localID: 1 }, symbolOverrides: [{ textData: { characters: '刪除範本' } }, { textData: { characters: '刪除範本後將無法再恢復，確定要刪除嗎？' } }, { textData: { characters: '刪除' } }] } },
+      { guid: { sessionID: 20, localID: 1 }, type: 'SYMBOL', name: 'Alert Variant', parentIndex: undefined },
+      { guid: { sessionID: 20, localID: 2 }, type: 'TEXT', name: 'Title', parentIndex: 1, textData: { characters: 'Title here' } },
+      { guid: { sessionID: 20, localID: 3 }, type: 'TEXT', name: 'Description', parentIndex: 1, textData: { characters: 'Content here' } },
+      { guid: { sessionID: 20, localID: 4 }, type: 'TEXT', name: 'Button', parentIndex: 1, textData: { characters: 'Button here' } }
+    ]);
+
+    const expanded = expandLocalInstances(normalized);
+    const instance = expanded.nodesById['10:1']!;
+    expect(instance.childIds).toEqual([]);
+    expect(instance.resolvedChildIds).toHaveLength(3);
+    expect(instance.resolvedComponentId).toBe('20:1');
+    expect(instance.resolvedChildIds.map((id) => expanded.nodesById[id]!.text)).toEqual(['刪除範本', '刪除範本後將無法再恢復，確定要刪除嗎？', '刪除']);
+  });
+
+  test('applies remaining instance text overrides to nested component text', () => {
+    const normalized = normalizeDocument([
+      { guid: { sessionID: 11, localID: 1 }, type: 'INSTANCE', name: 'Alert', symbolData: { symbolID: { sessionID: 21, localID: 1 }, symbolOverrides: [{ textData: { characters: '標題' } }, { textData: { characters: '主按鈕' } }] } },
+      { guid: { sessionID: 21, localID: 1 }, type: 'SYMBOL', name: 'Alert Variant', parentIndex: undefined },
+      { guid: { sessionID: 21, localID: 2 }, type: 'TEXT', name: 'Title', parentIndex: 1, textData: { characters: 'Title here' } },
+      { guid: { sessionID: 21, localID: 3 }, type: 'INSTANCE', name: 'Button', parentIndex: 1, symbolData: { symbolID: { sessionID: 31, localID: 1 }, symbolOverrides: [] } },
+      { guid: { sessionID: 31, localID: 1 }, type: 'SYMBOL', name: 'Button Variant', parentIndex: undefined },
+      { guid: { sessionID: 31, localID: 2 }, type: 'TEXT', name: 'Label', parentIndex: 4, textData: { characters: 'Confirm' } }
+    ]);
+
+    const expanded = expandLocalInstances(normalized);
+    const texts: string[] = [];
+    const visit = (id: string) => { const node = expanded.nodesById[id]!; if (node.text !== undefined) texts.push(node.text); for (const childId of node.resolvedChildIds ?? node.childIds) visit(childId); };
+    for (const id of expanded.nodesById['11:1']!.resolvedChildIds ?? []) visit(id);
+    expect(texts).toEqual(['標題', '主按鈕']);
+  });
+
   test('builds stable IDs, hierarchy, and text context', () => {
     expect(document.nodesById['1:2']).toMatchObject({ id: '1:2', type: 'FRAME', childIds: ['1:3'] });
     expect(document.nodesById['1:3']).toMatchObject({ text: 'Hello', parentId: '1:2' });

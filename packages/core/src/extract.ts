@@ -2,7 +2,7 @@ import { basename } from 'node:path';
 import { readFigArchive } from './archive/read-archive.js';
 import { writeBundle } from './bundle/write-bundle.js';
 import { decodeKiwiCanvas } from './decoder/kiwi.js';
-import { normalizeDocument, type AgentDocument } from './normalize/document.js';
+import { expandLocalInstances, normalizeDocument, type AgentDocument } from './normalize/document.js';
 import { extensionForAsset } from './assets.js';
 import { extractTokens, extractVariables } from './tokens/extract.js';
 import { vectorNetworkToSvg } from './vectors/svg.js';
@@ -34,7 +34,7 @@ export async function extractFig(sourcePath: string, outDir: string): Promise<Ex
     return svg ? [{ blobId: vector.blobId, svg }] : [];
   });
   const vectorSvgPaths = Object.fromEntries(svgVectors.map((vector) => [vector.blobId, `assets/vectors/vector-network-${vector.blobId}.svg`]));
-  const agent = normalizeDocument(decoded.nodeChanges, { originFileKey, assetPaths, vectorPaths, vectorSvgPaths });
+  const agent = expandLocalInstances(normalizeDocument(decoded.nodeChanges, { originFileKey, assetPaths, vectorPaths, vectorSvgPaths }));
   const variables = extractVariables(decoded.nodeChanges);
   const warnings = agent.nodesById && Object.values(agent.nodesById).some((node) => node.styleRefs) && !decoded.nodeChanges.some((change) => change.type === 'STYLE')
     ? ['STYLE_DEFINITIONS_UNAVAILABLE']
