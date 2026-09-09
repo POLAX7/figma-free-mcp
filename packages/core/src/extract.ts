@@ -5,7 +5,7 @@ import { decodeKiwiCanvas } from './decoder/kiwi.js';
 import { expandLocalInstances, normalizeDocument, type AgentDocument } from './normalize/document.js';
 import { extensionForAsset } from './assets.js';
 import { extractTokens, extractVariables } from './tokens/extract.js';
-import { vectorNetworkToSvg } from './vectors/svg.js';
+import { vectorNetworkToSvg, type VectorStyle } from './vectors/svg.js';
 
 export interface ExtractionResult { agent: AgentDocument; outDir: string; }
 
@@ -51,8 +51,19 @@ export async function extractFig(sourcePath: string, outDir: string): Promise<Ex
 
 function vectorSvg(node: Record<string, unknown> | undefined, bytes: Uint8Array): string | undefined {
   const size = record(node?.size);
-  return typeof size?.x === 'number' && typeof size.y === 'number' ? vectorNetworkToSvg(bytes, { x: size.x, y: size.y }) : undefined;
+  const style: VectorStyle | undefined = node ? {
+    fills: arrayOrNull(node.fillPaints),
+    strokes: arrayOrNull(node.strokePaints),
+    strokeWeight: numberValue(node.strokeWeight),
+    strokeCap: stringValue(node.strokeCap),
+    strokeJoin: stringValue(node.strokeJoin)
+  } : undefined;
+  return typeof size?.x === 'number' && typeof size.y === 'number' ? vectorNetworkToSvg(bytes, { x: size.x, y: size.y }, style) : undefined;
 }
+
+function arrayOrNull(value: unknown): readonly unknown[] | null | undefined { return Array.isArray(value) ? value : value === null ? null : undefined; }
+function numberValue(value: unknown): number | undefined { return typeof value === 'number' ? value : undefined; }
+function stringValue(value: unknown): string | null | undefined { return typeof value === 'string' ? value : value === null ? null : undefined; }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;

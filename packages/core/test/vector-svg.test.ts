@@ -68,3 +68,67 @@ test('preserves separate regions and uses evenodd fill for holes', () => {
   expect(svg?.match(/fill-rule="evenodd"/g)).toHaveLength(2);
   expect(svg?.match(/<path /g)).toHaveLength(2);
 });
+
+test('reconnects region segments when the vector network loop is unordered', () => {
+  const bytes = new Uint8Array(12 + 3 * 12 + 3 * 28 + 8 + 4 + 3 * 4);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 3, true); offset += 4;
+  view.setUint32(offset, 3, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  for (const [x, y] of [[0, 0], [24, 0], [12, 18]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  for (const [start, end] of [[0, 1], [1, 2], [2, 0]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setUint32(offset, start, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setUint32(offset, end, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 3, true); offset += 4;
+  for (const index of [1, 0, 2]) { view.setUint32(offset, index, true); offset += 4; }
+
+  expect(vectorNetworkToSvg(bytes, { x: 24, y: 18 })).toContain(
+    'd="M 24 0 L 12 18 L 0 0 L 24 0 Z"'
+  );
+});
+
+test('exports outline vector styles as strokes instead of filled paths', () => {
+  const bytes = new Uint8Array(12 + 2 * 12 + 1 * 28 + 8 + 4 + 2 * 4);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  for (const [x, y] of [[0, 0], [10, 0]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 0, true);
+
+  expect(vectorNetworkToSvg(bytes, { x: 10, y: 10 }, {
+    fills: null,
+    strokes: [{}],
+    strokeWeight: 1.8,
+    strokeCap: 'ROUND',
+    strokeJoin: 'ROUND'
+  })).toContain('fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"');
+});
