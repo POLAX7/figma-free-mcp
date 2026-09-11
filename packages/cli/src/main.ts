@@ -27,8 +27,13 @@ program.command('pack <bundle>').requiredOption('--node <reference>').requiredOp
   process.stdout.write(JSON.stringify({ format: 'codex', ...context, tokens, references: references.references.filter((reference) => context.nodeIds.includes(reference.nodeId)), visualBaseline: typeof manifest.visualBaseline === 'string' ? manifest.visualBaseline : undefined }, null, 2) + '\n');
 });
 program.command('render <bundle>').requiredOption('--node <reference>').action(async (bundle, options) => {
-  const document = await loadDocument(bundle); const node = resolveNodeReference(document, options.node); const svg = await composeBundleVectorGroupSvg(bundle, document, node.id);
+  const document = await loadDocument(bundle); const node = resolveNodeReference(document, options.node);
+  const warnings: string[] = [];
+  const svg = await composeBundleVectorGroupSvg(bundle, document, node.id, warnings);
   if (!svg) throw new FigctxError('NODE_NOT_FOUND', `No renderable vector group matches ${options.node}.`);
+  if (warnings.length) {
+    process.stderr.write(`[WARNING] Rendered SVG with ${warnings.length} skipped or unsupported items:\n` + warnings.map((w) => `  - ${w}`).join('\n') + '\n');
+  }
   process.stdout.write(svg + '\n');
 });
 program.command('reference <bundle>').requiredOption('--node <reference>').requiredOption('--image <png>').action(async (bundle, options) => {
