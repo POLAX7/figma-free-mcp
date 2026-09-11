@@ -58,6 +58,7 @@ and MCP context consumed by that workflow.
 - **Standalone Vector Segments**: Preserve vector-network segments that are not included in a filled region, so independent lines are not silently omitted from the SVG output.
 - **Binary Vector Fallback**: Prefer the complete `.bin.gz` vector network when a materialized SVG is missing or incomplete, and fall back to the materialized SVG only when binary decoding is unavailable.
 - **Disconnected Vector Paths**: Preserve separate, disconnected vector-network segments when the network has no filled regions, preventing an X or multi-line icon from collapsing to a single slash.
+- **Rounded Vector Strokes**: Preserve rounded cap/join output for vector nodes with Figma `cornerRadius`; inherited `MITER` defaults no longer erase the rounded appearance of Design System icons.
 - **Degenerate Vector Bounds**: Keep stroked vectors with zero or near-zero dimensions renderable by deriving a usable output size from stroke width or visible children.
 - **Border/Outline Layer Recognition**: Automatically treat layers named `border` or `outline` with strokes as `fill="none"` to avoid obscuring underlying layers.
 - **Affine Transform Bugfix**: Corrected affine matrix multiplication calculation (`multiply`) to prevent skew/rotation errors during nested vector composition.
@@ -75,6 +76,18 @@ figctx search .figctx/design "checkout" --type TEXT --limit 10
 figctx pack .figctx/design --node <node-id> --format codex
 figctx render .figctx/design --node <node-id> > artwork.svg
 ```
+
+When the renderer changes, re-extract the source `.fig` into a new bundle so
+materialized vector SVGs and `document.agent.json` use the same parser build:
+
+```sh
+node packages/cli/dist/main.js extract DesignSystem.fig --out .figctx/design-system-full-v4
+node packages/cli/dist/main.js render .figctx/design-system-full-v4 --node 955:692 > icon.svg
+```
+
+Restart any long-running MCP client after changing its `--root` or rebuilding
+the server. The configured root must contain the freshly extracted
+`document.agent.json`, not only the raw `.fig` file.
 
 ## Install and use
 

@@ -6,6 +6,7 @@ export interface VectorStyle {
   strokeWeight?: number;
   strokeCap?: string | null;
   strokeJoin?: string | null;
+  cornerRadius?: number;
 }
 
 interface Vertex { x: number; y: number; }
@@ -112,7 +113,10 @@ function buildPaths(vertices: readonly Vertex[], segments: readonly Segment[], r
       const first = ordered[0];
       if (!first) continue;
       regionPath.push(`M ${point(vertices[first.start]!)}`);
+      let previousEnd = first.start;
       for (const segment of ordered) {
+        if (segment.start !== previousEnd) regionPath.push(`M ${point(vertices[segment.start]!)}`);
+        previousEnd = segment.end;
         const start = vertices[segment.start]!;
         const end = vertices[segment.end]!;
         const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
@@ -175,7 +179,12 @@ function orderSegments(group: readonly number[], segments: readonly Segment[]): 
   let end = first.end;
   while (remaining.length) {
     const nextIndex = remaining.findIndex((segment) => segment.start === end || segment.end === end);
-    if (nextIndex < 0) break;
+    if (nextIndex < 0) {
+      const next = remaining.shift()!;
+      ordered.push(next);
+      end = next.end;
+      continue;
+    }
     const next = remaining.splice(nextIndex, 1)[0]!;
     const oriented = next.start === end ? next : reverseSegment(next);
     ordered.push(oriented);
@@ -191,8 +200,10 @@ function reverseSegment(segment: Segment): Segment {
 function outlineAttributes(style: VectorStyle | undefined): string {
   if (!style || !hasVisiblePaint(style.strokes) || hasVisiblePaint(style.fills)) return 'fill="currentColor" fill-rule="evenodd"';
   const weight = typeof style.strokeWeight === 'number' && style.strokeWeight > 0 ? number(style.strokeWeight) : '1';
-  const cap = svgLineValue(style.strokeCap, 'butt');
-  const join = svgLineValue(style.strokeJoin, 'miter');
+  const rounded = typeof style.cornerRadius === 'number' && style.cornerRadius > 0;
+  const cap = svgLineValue(style.strokeCap, rounded ? 'round' : 'butt');
+  const sourceJoin = svgLineValue(style.strokeJoin, 'miter');
+  const join = rounded && sourceJoin === 'miter' ? 'round' : sourceJoin;
   return `fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="${cap}" stroke-linejoin="${join}"`;
 }
 

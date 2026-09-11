@@ -56,7 +56,8 @@ function vectorSvg(node: Record<string, unknown> | undefined, bytes: Uint8Array)
     strokes: arrayOrNull(node.strokePaints),
     strokeWeight: numberValue(node.strokeWeight),
     strokeCap: stringValue(node.strokeCap),
-    strokeJoin: stringValue(node.strokeJoin)
+    strokeJoin: stringValue(node.strokeJoin),
+    cornerRadius: numberValue(node.cornerRadius)
   } : undefined;
   return typeof size?.x === 'number' && typeof size.y === 'number' ? vectorNetworkToSvg(bytes, { x: size.x, y: size.y }, style) : undefined;
 }

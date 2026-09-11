@@ -184,6 +184,61 @@ test('exports outline vector styles as strokes instead of filled paths', () => {
   })).toContain('fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"');
 });
 
+test('uses rounded stroke geometry when Figma provides vector corner radius', () => {
+  const bytes = new Uint8Array(12 + 2 * 12 + 1 * 28 + 8 + 4 + 2 * 4);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  for (const [x, y] of [[0, 0], [10, 0]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  const svg = vectorNetworkToSvg(bytes, { x: 10, y: 10 }, {
+    strokes: [{}],
+    strokeWeight: 1.4,
+    cornerRadius: 2
+  });
+  expect(svg).toContain('stroke-linecap="round" stroke-linejoin="round"');
+});
+
+test('corner radius overrides inherited miter joins for rounded Figma vectors', () => {
+  const bytes = new Uint8Array(12 + 2 * 12 + 1 * 28 + 8 + 4 + 2 * 4);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  for (const [x, y] of [[0, 0], [10, 0]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  const svg = vectorNetworkToSvg(bytes, { x: 10, y: 10 }, {
+    strokes: [{}],
+    strokeWeight: 1.4,
+    strokeJoin: 'MITER',
+    cornerRadius: 2
+  });
+  expect(svg).toContain('stroke-linejoin="round"');
+});
+
 test('preserves standalone segments outside filled region loops', () => {
   const bytes = new Uint8Array(12 + 12 * 12 + 6 * 28 + 8 + 4 + 4 * 4);
   const view = new DataView(bytes.buffer);

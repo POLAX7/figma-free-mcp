@@ -24,6 +24,8 @@ export interface AgentNode {
   fills?: unknown;
   strokes?: unknown;
   strokeWeight?: number;
+  strokeCap?: string;
+  strokeJoin?: string;
   strokeAlign?: string;
   effects?: unknown;
   typography?: Record<string, unknown>;
@@ -45,6 +47,9 @@ export interface AgentNode {
   componentKey?: string;
   overrideKey?: string;
   symbolOverrides?: Array<Record<string, unknown>>;
+  componentPropAssignments?: Array<Record<string, unknown>>;
+  componentPropRefs?: Array<Record<string, unknown>>;
+  resolutionError?: string;
 }
 
 export interface TextSegment { start: number; end: number; text: string; styleId: number; typography: Record<string, unknown>; fills?: unknown; }
@@ -126,7 +131,11 @@ export function expandLocalInstances(document: AgentDocument, assetPaths?: Reado
         // Clone the component definition's raw tree. A source node may already
         // carry resolved children from another instance and must not leak that
         // expansion into this instance.
-        const swappedComponentId = componentSwaps.get(source.id) ?? componentSwaps.get(source.node_id ?? '') ?? componentSwaps.get(source.overrideKey ?? '');
+        const propertyRef = source.componentPropRefs?.find((ref) => ref.componentPropNodeField === 'OVERRIDDEN_SYMBOL_ID');
+        const propertyId = guidId(propertyRef?.defID);
+        const assignment = propertyId ? instance.componentPropAssignments?.find((item) => guidId(item.defID) === propertyId) : undefined;
+        const propertySymbol = record(record(record(assignment?.varValue)?.value)?.symbolIdValue)?.guid;
+        const swappedComponentId = componentSwaps.get(source.id) ?? componentSwaps.get(source.node_id ?? '') ?? componentSwaps.get(source.overrideKey ?? '') ?? guidId(propertySymbol);
         const childIds = swappedComponentId ? [] : source.childIds.map((childId) => clone(childId, id));
         const text = textBySourceId.get(source.id);
         nodesById[id] = {
@@ -134,6 +143,8 @@ export function expandLocalInstances(document: AgentDocument, assetPaths?: Reado
           id,
           parentId,
           childIds,
+          resolvedChildIds: undefined,
+          resolutionError: swappedComponentId && !document.nodesById[swappedComponentId] ? `Unresolved icon swap on ${instance.id}/${source.id}: ${swappedComponentId}` : undefined,
           ...(swappedComponentId ? { resolvedComponentId: swappedComponentId, main_component_id: swappedComponentId, resolvedChildIds: undefined } : {}),
           ...(text === undefined ? {} : { text })
         };
@@ -362,12 +373,14 @@ function normalizeNode(change: Record<string, unknown>, zIndex: number, assetPat
   const overrideKey = guidId(change.overrideKey);
   return {
     id, node_id: id, name: typeof change.name === 'string' ? change.name : id, type: typeof change.type === 'string' ? change.type : 'UNKNOWN', childIds: [], zIndex,
+    ...(Array.isArray(change.componentPropAssignments) ? { componentPropAssignments: change.componentPropAssignments } : {}),
+    ...(Array.isArray(change.componentPropRefs) ? { componentPropRefs: change.componentPropRefs } : {}),
     ...(symbolId ? { resolvedComponentId: idFromGuid(symbolId, zIndex), main_component_id: guidId(symbolId), instanceTextOverrides, ...(Object.keys(instanceTextOverridesByNodeId).length ? { instanceTextOverridesByNodeId } : {}), ...(overrides.length ? { symbolOverrides: overrides } : {}) } : {}),
     ...(overrideKey ? { overrideKey } : {}),
     ...(typeof textData?.characters === 'string' ? { text: textData.characters } : {}), ...(segments ? { textSegments: segments } : {}), ...(textLayout && Object.keys(textLayout).length ? { textLayout } : {}),
     ...(change.size === undefined ? {} : { bounds: change.size }), ...(change.transform === undefined ? {} : { transform: change.transform }),
     ...(typeof change.visible === 'boolean' ? { visible: change.visible } : {}), ...(typeof change.opacity === 'number' ? { opacity: change.opacity } : {}), ...(change.blendMode === undefined ? {} : { blendMode: change.blendMode }), ...(typeof change.mask === 'boolean' ? { mask: change.mask } : {}), ...(typeof change.frameMaskDisabled === 'boolean' ? { frameMaskDisabled: change.frameMaskDisabled } : {}), ...(typeof change.resizeToFit === 'boolean' ? { resizeToFit: change.resizeToFit } : {}), constraints: { horizontal: change.horizontalConstraint, vertical: change.verticalConstraint },
-    layout: pick(change, layoutKeys), fills, strokes, ...(typeof change.strokeWeight === 'number' ? { strokeWeight: change.strokeWeight } : {}), ...(typeof change.strokeAlign === 'string' ? { strokeAlign: change.strokeAlign } : {}), ...(typeof change.cornerRadius === 'number' ? { cornerRadius: change.cornerRadius } : {}), effects: change.effects, typography, ...(styles ? { styleRefs: styles } : {}), ...(bindings ? { variableBindings: bindings } : {}), assetRefs: assetReferences(fills, assetPaths), ...(vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) ? { vectorRef: vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) } : {}),
+    layout: pick(change, layoutKeys), fills, strokes, ...(typeof change.strokeWeight === 'number' ? { strokeWeight: change.strokeWeight } : {}), ...(typeof change.strokeCap === 'string' ? { strokeCap: change.strokeCap } : {}), ...(typeof change.strokeJoin === 'string' ? { strokeJoin: change.strokeJoin } : {}), ...(typeof change.strokeAlign === 'string' ? { strokeAlign: change.strokeAlign } : {}), ...(typeof change.cornerRadius === 'number' ? { cornerRadius: change.cornerRadius } : {}), effects: change.effects, typography, ...(styles ? { styleRefs: styles } : {}), ...(bindings ? { variableBindings: bindings } : {}), assetRefs: assetReferences(fills, assetPaths), ...(vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) ? { vectorRef: vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) } : {}),
     ...(typeof change.sourceLibraryKey === 'string' ? { sourceLibraryKey: change.sourceLibraryKey } : {}), ...(typeof change.componentKey === 'string' ? { componentKey: change.componentKey } : {})
   };
 }

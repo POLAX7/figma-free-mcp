@@ -55,6 +55,7 @@ function limit(value: number | undefined, fallback: number, maximum: number): nu
 
 function inspect(document: AgentDocument, node: AgentNode, depth: number, childLimit: number, depthLimit: number, state: { remainingNodes: number; omitted: string[] }): InspectedNode {
   state.remainingNodes -= 1;
+  if (node.resolutionError) state.omitted.push(node.resolutionError);
   const sourceChildIds = effectiveChildIds(node);
   const childIds = sourceChildIds.slice(0, childLimit);
   if (sourceChildIds.length > childIds.length) state.omitted.push(`node ${node.id}: ${sourceChildIds.length - childIds.length} children omitted by maxChildren limit (${childLimit})`);

@@ -112,7 +112,10 @@ export async function composeBundleVectorGroupSvg(bundleRoot: string, document: 
           const svg = size ? vectorNetworkToSvg(bytes, size, {
             fills: source.node.fills as readonly unknown[] | null | undefined,
             strokes: source.node.strokes as readonly unknown[] | null | undefined,
-            strokeWeight: source.node.strokeWeight
+            strokeWeight: source.node.strokeWeight,
+            strokeCap: source.node.strokeCap,
+            strokeJoin: source.node.strokeJoin,
+            cornerRadius: source.node.cornerRadius
           }) : undefined;
           if (svg) return [blobId, svg] as const;
         } catch {
@@ -128,6 +131,7 @@ export async function composeBundleVectorGroupSvg(bundleRoot: string, document: 
 }
 
 function renderNode(document: AgentDocument, node: AgentNode, parentMatrix: Matrix, composition: Composition): string {
+  if (node.resolutionError) throw new Error(node.resolutionError);
   if (node.visible === false) return '';
   const rendered = withOpacity(renderContainer(document, node, multiply(parentMatrix, matrixOf(node)), composition, true), node.opacity);
   if (!rendered && node.type !== 'FRAME' && node.type !== 'GROUP' && node.type !== 'INSTANCE' && node.type !== 'COMPONENT') {
@@ -201,7 +205,7 @@ function vectorPath(node: AgentNode, matrix: Matrix, vectorSvgs: ReadonlyMap<num
   const strokeWeight = strokeWeightOf(node);
   if (!isVectorShape(node) && node.vectorRef) {
     const svg = vectorSvgs.get(node.vectorRef.blobId);
-    if (svg) return pathElements(svg, matrix, fill, stroke, fillOpacity, strokeWeight);
+    if (svg) return pathElements(svg, matrix, fill, stroke, fillOpacity, strokeWeight, node.strokeCap, node.strokeJoin, node.cornerRadius);
   }
   const size = sizeOf(node);
   if (!size) return '';
@@ -250,7 +254,7 @@ function withOpacity(content: string, opacity: number | undefined): string {
 }
 
 function clipsContents(node: AgentNode): boolean { return node.frameMaskDisabled === false && node.type === 'FRAME' && !node.resizeToFit; }
-function pathElements(svg: string, matrix: Matrix, fill: string, stroke: string, fillOpacity?: number, strokeWeight?: number): string {
+function pathElements(svg: string, matrix: Matrix, fill: string, stroke: string, fillOpacity?: number, strokeWeight?: number, strokeCap?: string, strokeJoin?: string, nodeCornerRadius?: number): string {
   const transform = ` transform="matrix(${matrix.map(number).join(' ')})"`;
   return (svg.match(/<path\b[^>]*>/g) ?? []).map((path) => {
     let colored = path;
@@ -278,6 +282,11 @@ function pathElements(svg: string, matrix: Matrix, fill: string, stroke: string,
         colored = colored.replace(/\/?>(?=$)/, ` stroke-width="${number(strokeWeight)}"$&`);
       }
     }
+    const rounded = typeof nodeCornerRadius === 'number' && nodeCornerRadius > 0;
+    const effectiveCap = typeof strokeCap === 'string' ? strokeCap : rounded ? 'round' : undefined;
+    const effectiveJoin = rounded && (!strokeJoin || strokeJoin.toLowerCase() === 'miter') ? 'round' : strokeJoin;
+    if (effectiveCap && colored.includes('stroke-linecap="')) colored = colored.replace(/stroke-linecap="[^"]*"/, `stroke-linecap="${effectiveCap.toLowerCase()}"`);
+    if (effectiveJoin && colored.includes('stroke-linejoin="')) colored = colored.replace(/stroke-linejoin="[^"]*"/, `stroke-linejoin="${effectiveJoin.toLowerCase()}"`);
     return colored.replace(/\/?>(?=$)/, `${transform}/>`);
   }).join('');
 }
