@@ -44,6 +44,7 @@ and MCP context consumed by that workflow.
 #### 2. Cross-Bundle & Design System Resolution
 - **Peer Bundle Discovery**: Automatically detect neighboring bundles (such as shared external Design Systems) located in parent directories.
 - **Cross-Bundle Component Indexing**: Build an index across primary and peer bundles keyed by Figma `componentKey`, enabling direct lookups via `search_nodes` or `inspect_node --node 'comp:<key>'`.
+- **Instance Swap Resolution**: Support instance swaps referencing external design system components (`componentPropAssignments` and `symbolOverrides`), resolving substituted components across peer bundles when exporting SVGs or inspecting nodes.
 - **Transparent Asset & Vector Fallback**: When an instance in the primary file references an external component, `get_vector_svg` and `get_asset` seamlessly fall back to peer bundles to fetch vector geometry or image assets.
 
 #### 3. Accurate Color & Variable Alias Resolution
@@ -51,6 +52,9 @@ and MCP context consumed by that workflow.
 - **Symbol Override Paints**: Accurately resolve fill and stroke variable colors inside `symbolOverrides` for instantiated components.
 
 #### 4. High-Fidelity Vector & SVG Rendering
+- **Symbol & Component Frame Preservation**: Render vector groups against their declared symbol or instance frame bounds as the SVG canvas/viewBox (e.g., 24×24 or 30×30), preserving inner margins, padding, and transforms instead of truncating the viewBox to leaf vector tight bounding boxes.
+- **1D & Dimension Vector Geometry Scaling**: Correctly scale 1D straight horizontal/vertical lines and scaled vectors in `fitGeometryToSize` so lines span their intended dimensions instead of remaining constrained to unscaled raw coordinates.
+- **Per-Node Vector Geometry**: Key vector SVGs by node ID so multiple vector instances sharing the same Kiwi binary blob can each render at their respective sizes and stroke weights.
 - **Shape & Outline Preservation**: Support geometric shapes (`RECTANGLE`, `ROUNDED_RECTANGLE`, `ELLIPSE`, `FRAME`) with proper SVG representations (`<rect>`, `<ellipse>`).
 - **Stroke & Stroke Alignment**: Preserve stroke colors, stroke width, and `strokeAlign` (`INSIDE`, `CENTER`, `OUTSIDE`) calculations.
 - **Outside Stroke Bounds**: Expand rectangle geometry and emit negative `x`/`y` offsets for `OUTSIDE` strokes, preventing the outer border from being rendered at the original bounds or silently clipped.

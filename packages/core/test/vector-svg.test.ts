@@ -59,6 +59,30 @@ test('fits vector geometry that exceeds the declared node size inside the SVG vi
   expect(vectorNetworkToSvg(bytes, { x: 16, y: 16 })).toContain('d="M 0 0 L 16 16"');
 });
 
+test('scales 1D vertical and horizontal line vectors to match declared bounds', () => {
+  const bytes = new Uint8Array(12 + 2 * 12 + 28);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  for (const [x, y] of [[0, 0], [0, 10]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setFloat32(offset, 0, true); offset += 4;
+  view.setFloat32(offset, 0, true);
+
+  const svg = vectorNetworkToSvg(bytes, { x: 1.8, y: 18.75 });
+  expect(svg).toContain('d="M 0 0 L 0 18.75"');
+});
+
 test('preserves disconnected segments when a vector network has no regions', () => {
   const bytes = new Uint8Array(12 + 4 * 12 + 2 * 28);
   const view = new DataView(bytes.buffer);

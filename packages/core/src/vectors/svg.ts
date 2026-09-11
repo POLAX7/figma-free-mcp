@@ -66,8 +66,17 @@ function fitGeometryToSize(vertices: readonly Vertex[], segments: readonly Segme
     maxX = Math.max(maxX, start.x + segment.tangentStartX, end.x + segment.tangentEndX);
     maxY = Math.max(maxY, start.y + segment.tangentStartY, end.y + segment.tangentEndY);
   }
-  const scale = Math.min(1, size.x / maxX, size.y / maxY);
-  if (!Number.isFinite(scale) || scale >= 1) return { vertices: [...vertices], segments: [...segments] };
+  const hasX = maxX > 0.001 && size.x > 0.001;
+  const hasY = maxY > 0.001 && size.y > 0.001;
+  let scale = 1;
+  if (hasX && hasY) {
+    scale = Math.min(size.x / maxX, size.y / maxY);
+  } else if (hasX) {
+    scale = size.x / maxX;
+  } else if (hasY) {
+    scale = size.y / maxY;
+  }
+  if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.0001) return { vertices: [...vertices], segments: [...segments] };
   return {
     vertices: vertices.map((vertex) => ({ x: vertex.x * scale, y: vertex.y * scale })),
     segments: segments.map((segment) => ({

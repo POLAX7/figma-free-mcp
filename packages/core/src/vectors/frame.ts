@@ -14,7 +14,7 @@ interface SkippedLayer {
 }
 
 interface Composition {
-  readonly vectorSvgs: ReadonlyMap<number, string>;
+  readonly vectorSvgs: ReadonlyMap<number | string, string>;
   readonly defs: string[];
   nextDefinitionId: number;
   readonly skipped: SkippedLayer[];
@@ -28,7 +28,7 @@ export interface VectorGroup {
 }
 
 /** Creates one SVG for a frame, preserving Figma frame clips and sibling masks. */
-export function composeFrameSvg(document: AgentDocument, frameId: string, vectorSvgs: ReadonlyMap<number, string>): string | undefined {
+export function composeFrameSvg(document: AgentDocument, frameId: string, vectorSvgs: ReadonlyMap<number | string, string>): string | undefined {
   const frame = document.nodesById[frameId];
   const size = sizeOf(frame);
   if (!frame || !size) return undefined;
@@ -76,7 +76,7 @@ export function findVectorGroups(document: AgentDocument, rootId: string): Vecto
 }
 
 /** Composes one vector-only group into a self-contained SVG. */
-export function composeVectorGroupSvg(document: AgentDocument, nodeId: string, vectorSvgs: ReadonlyMap<number, string>, warnings?: string[]): string | undefined {
+export function composeVectorGroupSvg(document: AgentDocument, nodeId: string, vectorSvgs: ReadonlyMap<number | string, string>, warnings?: string[]): string | undefined {
   const root = document.nodesById[nodeId];
   const size = renderSizeOf(document, root);
   if (!root || !size) return undefined;
@@ -94,39 +94,48 @@ export function composeVectorGroupSvg(document: AgentDocument, nodeId: string, v
 
 /** Reads only a group's extracted SVG fragments and composes them on demand. */
 export async function composeBundleVectorGroupSvg(bundleRoot: string, document: AgentDocument, nodeId: string, warnings?: string[]): Promise<string | undefined> {
-  const vectorPaths = new Map<number, { node: AgentNode; path?: string; binaryPath?: string }>();
+  const vectorNodes = new Map<string, AgentNode>();
   const visit = (id: string) => {
     const node = document.nodesById[id];
     if (!node) return;
-    if (node.vectorRef) vectorPaths.set(node.vectorRef.blobId, { node, path: node.vectorRef.svgPath, binaryPath: node.vectorRef.path });
+    if (node.vectorRef) vectorNodes.set(node.id, node);
     const childIds = node.resolvedChildIds && node.resolvedChildIds.length ? node.resolvedChildIds : node.childIds;
     for (const childId of childIds) visit(childId);
   };
   visit(nodeId);
-  const vectorSvgs = new Map(await Promise.all([...vectorPaths].map(async ([blobId, source]) => {
+  const vectorSvgs = new Map<number | string, string>();
+  await Promise.all([...vectorNodes.values()].map(async (node) => {
     try {
-      if (source.binaryPath) {
+      if (node.vectorRef?.path) {
         try {
-          const bytes = gunzipSync(await readFile(join(bundleRoot, source.binaryPath)));
-          const size = renderSizeOf(document, source.node);
+          const bytes = gunzipSync(await readFile(join(bundleRoot, node.vectorRef.path)));
+          const size = renderSizeOf(document, node);
           const svg = size ? vectorNetworkToSvg(bytes, size, {
-            fills: source.node.fills as readonly unknown[] | null | undefined,
-            strokes: source.node.strokes as readonly unknown[] | null | undefined,
-            strokeWeight: source.node.strokeWeight,
-            strokeCap: source.node.strokeCap,
-            strokeJoin: source.node.strokeJoin,
-            cornerRadius: source.node.cornerRadius
+            fills: node.fills as readonly unknown[] | null | undefined,
+            strokes: node.strokes as readonly unknown[] | null | undefined,
+            strokeWeight: node.strokeWeight,
+            strokeCap: node.strokeCap,
+            strokeJoin: node.strokeJoin,
+            cornerRadius: node.cornerRadius
           }) : undefined;
-          if (svg) return [blobId, svg] as const;
-        } catch {
-          // Fall back to the materialized SVG when the binary asset is unavailable.
+          if (svg) {
+            vectorSvgs.set(node.id, svg);
+            if (!vectorSvgs.has(node.vectorRef.blobId)) {
+              vectorSvgs.set(node.vectorRef.blobId, svg);
+            }
+            return;
+          }
+        } catch {}
+      }
+      if (node.vectorRef?.svgPath) {
+        const svg = await readFile(join(bundleRoot, node.vectorRef.svgPath), 'utf8');
+        vectorSvgs.set(node.id, svg);
+        if (!vectorSvgs.has(node.vectorRef.blobId)) {
+          vectorSvgs.set(node.vectorRef.blobId, svg);
         }
       }
-      return [blobId, source.path ? await readFile(join(bundleRoot, source.path), 'utf8') : ''] as const;
-    } catch {
-      return [blobId, ''] as const;
-    }
-  })));
+    } catch {}
+  }));
   return composeVectorGroupSvg(document, nodeId, vectorSvgs, warnings);
 }
 
@@ -186,7 +195,7 @@ function defineMask(document: AgentDocument, node: AgentNode, parentMatrix: Matr
   return id;
 }
 
-function maskPaths(document: AgentDocument, node: AgentNode, parentMatrix: Matrix, vectorSvgs: ReadonlyMap<number, string>): string[] {
+function maskPaths(document: AgentDocument, node: AgentNode, parentMatrix: Matrix, vectorSvgs: ReadonlyMap<number | string, string>): string[] {
   if (node.visible === false) return [];
   const matrix = multiply(parentMatrix, matrixOf(node));
   const stroke = strokeOf(node) !== 'none' ? '#ffffff' : 'none';
@@ -200,11 +209,11 @@ function maskPaths(document: AgentDocument, node: AgentNode, parentMatrix: Matri
   return result;
 }
 
-function vectorPath(node: AgentNode, matrix: Matrix, vectorSvgs: ReadonlyMap<number, string>, fill: string, stroke: string): string {
+function vectorPath(node: AgentNode, matrix: Matrix, vectorSvgs: ReadonlyMap<number | string, string>, fill: string, stroke: string): string {
   const fillOpacity = fillOpacityOf(node);
   const strokeWeight = strokeWeightOf(node);
   if (!isVectorShape(node) && node.vectorRef) {
-    const svg = vectorSvgs.get(node.vectorRef.blobId);
+    const svg = vectorSvgs.get(node.id) ?? vectorSvgs.get(node.vectorRef.blobId);
     if (svg) return pathElements(svg, matrix, fill, stroke, fillOpacity, strokeWeight, node.strokeCap, node.strokeJoin, node.cornerRadius);
   }
   const size = sizeOf(node);

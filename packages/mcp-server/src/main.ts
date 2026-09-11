@@ -69,22 +69,74 @@ server.registerTool('review_visual_match', { description: 'Call after the first 
   const [referencePng, candidatePng] = await Promise.all([readFile(join(bundleRoot, attachedReference.path)), readFile(candidatePath)]);
   return { content: buildVisualReview({ nodeId: node.id, phase: phase as ReviewPhase, reference: referencePng, candidate: candidatePng, comparison: comparePng(referencePng, candidatePng) }).content };
 });
+function findSwappedSymbolId(node: AgentNode): string | undefined {
+  if (Array.isArray(node.componentPropAssignments)) {
+    for (const item of node.componentPropAssignments) {
+      const varVal = item?.varValue as Record<string, unknown> | undefined;
+      const val = varVal?.value as Record<string, unknown> | undefined;
+      const symVal = val?.symbolIdValue as Record<string, unknown> | undefined;
+      const guid = symVal?.guid as { sessionID?: number; localID?: number } | undefined;
+      if (guid && typeof guid.sessionID === 'number' && typeof guid.localID === 'number') {
+        return `${guid.sessionID}:${guid.localID}`;
+      }
+    }
+  }
+  return undefined;
+}
+
 server.registerTool(publicToolNames.getVectorSvg, { description: 'Compose one listed vector-only group into a self-contained SVG without modifying the bundle.', inputSchema: publicToolSchemas.get_vector_svg }, async ({ reference }) => {
   const { node, targetDoc, targetRoot } = await resolveAnyNode(reference);
   const warnings: string[] = [];
   let svg = await composeBundleVectorGroupSvg(targetRoot, targetDoc, node.id, warnings);
 
-  // If local node has no vector group, check if its componentKey resolves to a peer component with vectors
+  // If local node has no vector group, check if an instance swap or componentKey resolves to a component with vectors
   if (!svg) {
-    const master = node.main_component_id ? targetDoc.nodesById[node.main_component_id] : (node.resolvedComponentId ? targetDoc.nodesById[node.resolvedComponentId] : undefined);
+    const swappedId = findSwappedSymbolId(node);
+    const candidateIds = [swappedId, node.resolvedComponentId, node.main_component_id].filter(Boolean) as string[];
+
+    // 1. Try candidate components in targetDoc first
+    for (const cid of candidateIds) {
+      if (targetDoc.nodesById[cid]) {
+        svg = await composeBundleVectorGroupSvg(targetRoot, targetDoc, cid, warnings);
+        if (svg) return text({ nodeId: cid, svg, ...(warnings.length ? { warnings } : {}) });
+      }
+    }
+
+    // 2. Try candidate components in peerBundles
+    for (const cid of candidateIds) {
+      for (const peer of peerBundles) {
+        try {
+          const peerDoc = await loadPeerDoc(peer);
+          if (peerDoc.nodesById[cid]) {
+            svg = await composeBundleVectorGroupSvg(peer.bundleRoot, peerDoc, cid, warnings);
+            if (svg) return text({ nodeId: cid, peerLibrary: peer.originFileKey, svg, ...(warnings.length ? { warnings } : {}) });
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Check componentKey index fallback
+    let master = node.main_component_id ? targetDoc.nodesById[node.main_component_id] : (node.resolvedComponentId ? targetDoc.nodesById[node.resolvedComponentId] : undefined);
+    if (!master && (node.main_component_id || node.resolvedComponentId)) {
+      const targetId = (node.main_component_id || node.resolvedComponentId)!;
+      for (const peer of peerBundles) {
+        try {
+          const peerDoc = await loadPeerDoc(peer);
+          if (peerDoc.nodesById[targetId]) {
+            master = peerDoc.nodesById[targetId];
+            break;
+          }
+        } catch {}
+      }
+    }
     const componentKey = node.componentKey ?? master?.componentKey;
     if (componentKey && componentIndex.has(componentKey)) {
       const indexed = componentIndex.get(componentKey)!;
-      if (indexed.bundleRoot !== targetRoot && indexed.hasVectors) {
+      if (indexed.hasVectors) {
         const peer = peerBundles.find((p) => p.bundleRoot === indexed.bundleRoot);
-        if (peer) {
-          const peerDoc = await loadPeerDoc(peer);
-          svg = await composeBundleVectorGroupSvg(peer.bundleRoot, peerDoc, indexed.nodeId, warnings);
+        const sourceDoc = peer ? await loadPeerDoc(peer) : (indexed.bundleRoot === targetRoot ? targetDoc : undefined);
+        if (sourceDoc) {
+          svg = await composeBundleVectorGroupSvg(indexed.bundleRoot, sourceDoc, indexed.nodeId, warnings);
           if (svg) return text({ nodeId: indexed.nodeId, peerLibrary: indexed.sourceBundle, svg, ...(warnings.length ? { warnings } : {}) });
         }
       }

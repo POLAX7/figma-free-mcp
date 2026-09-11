@@ -188,3 +188,74 @@ test('cross-bundle component index enriches inspect_node and enables componentKe
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('resolves swapped instance symbol in peer bundle for get_vector_svg', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'figctx-mcp-swap-'));
+  const primaryBundle = join(root, 'primary');
+  const peerBundle = join(root, 'design-system');
+  await mkdir(join(primaryBundle, 'tokens'), { recursive: true });
+  await mkdir(join(peerBundle, 'tokens'), { recursive: true });
+
+  await Promise.all([
+    writeFile(join(primaryBundle, 'manifest.json'), JSON.stringify({ originFileKey: 'primary-key' })),
+    writeFile(join(primaryBundle, 'document.agent.json'), JSON.stringify({
+      contractVersion: '1',
+      rootIds: ['1:1'],
+      nodesById: {
+        '1:1': { id: '1:1', name: 'Page', type: 'FRAME', childIds: ['1:2'], zIndex: 0, assetRefs: [] },
+        '1:2': {
+          id: '1:2', name: 'IconSlot', type: 'INSTANCE', parentId: '1:1', childIds: [], zIndex: 1, assetRefs: [],
+          componentPropAssignments: [
+            {
+              varValue: {
+                value: {
+                  symbolIdValue: {
+                    guid: { sessionID: 500, localID: 600 }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    })),
+    ...['colors', 'typography', 'effects'].map((name) => writeFile(join(primaryBundle, `tokens/${name}.json`), JSON.stringify({ tokens: [] }))),
+    writeFile(join(primaryBundle, 'tokens/fonts.json'), JSON.stringify({ fonts: [] })),
+
+    writeFile(join(peerBundle, 'manifest.json'), JSON.stringify({ originFileKey: 'peer-library-key' })),
+    writeFile(join(peerBundle, 'drag.svg'), '<svg viewBox="0 0 30 30"><path d="M 5 10 L 25 10" stroke="currentColor"/></svg>'),
+    writeFile(join(peerBundle, 'document.agent.json'), JSON.stringify({
+      contractVersion: '1',
+      originFileKey: 'peer-library-key',
+      rootIds: ['500:600'],
+      nodesById: {
+        '500:600': {
+          id: '500:600', name: 'DragHandle', type: 'SYMBOL', childIds: ['500:601'], zIndex: 0,
+          bounds: { x: 30, y: 30 }, assetRefs: []
+        },
+        '500:601': {
+          id: '500:601', name: 'Line', type: 'VECTOR', parentId: '500:600', childIds: [], zIndex: 1,
+          bounds: { x: 30, y: 30 }, strokes: [{ type: 'SOLID', color: { r: 1, g: 0.5, b: 0 } }],
+          vectorRef: { blobId: 777, svgPath: 'drag.svg' }, assetRefs: []
+        }
+      }
+    })),
+    ...['colors', 'typography', 'effects'].map((name) => writeFile(join(peerBundle, `tokens/${name}.json`), JSON.stringify({ tokens: [] }))),
+    writeFile(join(peerBundle, 'tokens/fonts.json'), JSON.stringify({ fonts: [] }))
+  ]);
+
+  const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../dist/main.js', import.meta.url)), '--root', primaryBundle], stderr: 'pipe' });
+  const client = new Client({ name: 'figctx-swap-test', version: '1.0.0' });
+  try {
+    await client.connect(transport);
+    const svgRes = await client.callTool({ name: 'get_vector_svg', arguments: { reference: '1:2' } });
+    const svgJson = JSON.parse((svgRes.content[0] as { text: string }).text);
+    expect(svgJson.nodeId).toBe('500:600');
+    expect(svgJson.peerLibrary).toBe('peer-library-key');
+    expect(svgJson.svg).toContain('viewBox="0 0 30 30"');
+    expect(svgJson.svg).toContain('stroke="#ff8000"');
+  } finally {
+    await client.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
