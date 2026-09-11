@@ -98,31 +98,52 @@ export function expandLocalInstances(document: AgentDocument, assetPaths?: Reado
   const resolveVar = variableResolver ?? document.variableResolver;
   const nodesById = { ...document.nodesById };
   const pending: Array<{ node: AgentNode; componentPath: Set<string> }> = Object.values(document.nodesById).map((node) => ({ node, componentPath: new Set<string>() }));
-  for (let index = 0; index < pending.length; index += 1) {
-    const { node: instance, componentPath } = pending[index]!;
-    if (instance.type !== 'INSTANCE' || instance.childIds.length || instance.resolvedChildIds || !instance.resolvedComponentId) continue;
-    const component = document.nodesById[instance.resolvedComponentId];
-    if (!component) continue;
-    if (componentPath.has(instance.resolvedComponentId)) continue;
-    const nextPath = new Set(componentPath).add(instance.resolvedComponentId);
-    const textOverrides = instance.instanceTextOverrides ?? [];
-    const sourceTexts = descendantIds(document, component.childIds).map((id) => document.nodesById[id]).filter((node): node is AgentNode => Boolean(node?.text !== undefined));
-    const textBySourceId = new Map(sourceTexts.map((node, index) => [node.id, textOverrides[index]]));
-    Object.entries(instance.instanceTextOverridesByNodeId ?? {}).forEach(([sourceId, text]) => textBySourceId.set(sourceId, text));
-    const clone = (sourceId: string, parentId: string): string => {
-      const source = document.nodesById[sourceId]!;
-      const id = `${instance.id}::${source.id}`;
-      // Clone the component definition's raw tree. A source node may already
-      // carry resolved children from another instance and must not leak that
-      // expansion into this instance.
-      const childIds = source.childIds.map((childId) => clone(childId, id));
-      const text = textBySourceId.get(source.id);
-      nodesById[id] = { ...source, id, parentId, childIds, ...(text === undefined ? {} : { text }) };
-      if (nodesById[id]!.type === 'INSTANCE' && nodesById[id]!.resolvedComponentId && !nextPath.has(nodesById[id]!.resolvedComponentId!)) pending.push({ node: nodesById[id]!, componentPath: nextPath });
-      return id;
-    };
-    instance.resolvedChildIds = component.childIds.map((childId) => clone(childId, instance.id));
-  }
+  const expandPending = () => {
+    for (let index = 0; index < pending.length; index += 1) {
+      const { node: instance, componentPath } = pending[index]!;
+      if (instance.type !== 'INSTANCE' || instance.childIds.length || instance.resolvedChildIds || !instance.resolvedComponentId) continue;
+      const component = document.nodesById[instance.resolvedComponentId];
+      if (!component) continue;
+      if (componentPath.has(instance.resolvedComponentId)) continue;
+      const nextPath = new Set(componentPath).add(instance.resolvedComponentId);
+      const textOverrides = instance.instanceTextOverrides ?? [];
+      const sourceTexts = descendantIds(document, component.childIds).map((id) => document.nodesById[id]).filter((node): node is AgentNode => Boolean(node?.text !== undefined));
+      const textBySourceId = new Map(sourceTexts.map((node, index) => [node.id, textOverrides[index]]));
+      Object.entries(instance.instanceTextOverridesByNodeId ?? {}).forEach(([sourceId, text]) => textBySourceId.set(sourceId, text));
+      const componentSwaps = new Map(
+        (instance.symbolOverrides ?? []).flatMap((override) => {
+          const path = record(override.guidPath)?.guids;
+          const overriddenSymbol = record(override.overriddenSymbolID);
+          if (!Array.isArray(path) || !path.length || !overriddenSymbol) return [];
+          const targetId = guidId(path[path.length - 1]);
+          const componentId = idFromGuid(overriddenSymbol, 0);
+          return targetId && componentId ? [[targetId, componentId] as const] : [];
+        })
+      );
+      const clone = (sourceId: string, parentId: string): string => {
+        const source = document.nodesById[sourceId]!;
+        const id = `${instance.id}::${source.id}`;
+        // Clone the component definition's raw tree. A source node may already
+        // carry resolved children from another instance and must not leak that
+        // expansion into this instance.
+        const swappedComponentId = componentSwaps.get(source.id) ?? componentSwaps.get(source.node_id ?? '') ?? componentSwaps.get(source.overrideKey ?? '');
+        const childIds = swappedComponentId ? [] : source.childIds.map((childId) => clone(childId, id));
+        const text = textBySourceId.get(source.id);
+        nodesById[id] = {
+          ...source,
+          id,
+          parentId,
+          childIds,
+          ...(swappedComponentId ? { resolvedComponentId: swappedComponentId, main_component_id: swappedComponentId, resolvedChildIds: undefined } : {}),
+          ...(text === undefined ? {} : { text })
+        };
+        if (nodesById[id]!.type === 'INSTANCE' && nodesById[id]!.resolvedComponentId && !nextPath.has(nodesById[id]!.resolvedComponentId!)) pending.push({ node: nodesById[id]!, componentPath: nextPath });
+        return id;
+      };
+      instance.resolvedChildIds = component.childIds.map((childId) => clone(childId, instance.id));
+    }
+  };
+  expandPending();
   for (const instance of Object.values(document.nodesById)) {
     if (instance.type !== 'INSTANCE' || !instance.resolvedChildIds || !instance.resolvedComponentId) continue;
     const component = document.nodesById[instance.resolvedComponentId];
@@ -160,10 +181,22 @@ export function expandLocalInstances(document: AgentDocument, assetPaths?: Reado
 
       const target = findOverrideTarget(instance, pathGuids, nodesById);
       if (target) {
+        const overriddenSymbol = record(override.overriddenSymbolID);
+        if (overriddenSymbol) {
+          const componentId = idFromGuid(overriddenSymbol, target.zIndex);
+          if (target.resolvedComponentId !== componentId) {
+            target.resolvedComponentId = componentId;
+            target.main_component_id = componentId;
+            target.childIds = [];
+            target.resolvedChildIds = undefined;
+            pending.push({ node: target, componentPath: new Set<string>() });
+          }
+        }
         applyOverride(target, override, assetPaths, resolveVar);
       }
     }
   }
+  expandPending();
 
   return { ...document, nodesById };
 }

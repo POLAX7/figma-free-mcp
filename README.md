@@ -37,6 +37,7 @@ and MCP context consumed by that workflow.
 #### 1. Component Resolution & Instance Expansion
 - **Preserve Component Metadata**: Preserve an instance's original `node_id`, `main_component_id`, `sourceLibraryKey`, and `componentKey` from `symbolData`, while keeping the raw `childIds` unchanged for diagnostics.
 - **Local Instance Expansion**: Resolve local `SYMBOL` definitions into per-instance `resolvedChildIds`, including nested components with cycle protection and isolated IDs when the same component is used repeatedly.
+- **Symbol Component Overrides**: Apply `symbolOverrides.overriddenSymbolID` to the expanded instance tree, so an overridden trailing control resolves to its actual component (for example, Trash instead of the base Cancel/X component).
 - **Target-Specific Text Overrides**: Apply text overrides by their `guidPath` target (`instanceTextOverridesByNodeId`) instead of relying on array ordering in Figma's export.
 - **Bounded Context Traversal**: Make node context traversal and bounded inspection use resolved children, reporting component identity, source libraries, and expansion status.
 
@@ -55,7 +56,8 @@ and MCP context consumed by that workflow.
 - **Outside Stroke Bounds**: Expand rectangle geometry and emit negative `x`/`y` offsets for `OUTSIDE` strokes, preventing the outer border from being rendered at the original bounds or silently clipped.
 - **Rounded Outside Strokes**: Expand rounded-rectangle corner radii together with `OUTSIDE` strokes so the outer border preserves the intended corner geometry.
 - **Standalone Vector Segments**: Preserve vector-network segments that are not included in a filled region, so independent lines are not silently omitted from the SVG output.
-- **Binary Vector Fallback**: Decode `.bin.gz` vector networks on demand when a bundle does not contain a materialized SVG path.
+- **Binary Vector Fallback**: Prefer the complete `.bin.gz` vector network when a materialized SVG is missing or incomplete, and fall back to the materialized SVG only when binary decoding is unavailable.
+- **Disconnected Vector Paths**: Preserve separate, disconnected vector-network segments when the network has no filled regions, preventing an X or multi-line icon from collapsing to a single slash.
 - **Degenerate Vector Bounds**: Keep stroked vectors with zero or near-zero dimensions renderable by deriving a usable output size from stroke width or visible children.
 - **Border/Outline Layer Recognition**: Automatically treat layers named `border` or `outline` with strokes as `fill="none"` to avoid obscuring underlying layers.
 - **Affine Transform Bugfix**: Corrected affine matrix multiplication calculation (`multiply`) to prevent skew/rotation errors during nested vector composition.

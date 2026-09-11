@@ -59,6 +59,34 @@ test('fits vector geometry that exceeds the declared node size inside the SVG vi
   expect(vectorNetworkToSvg(bytes, { x: 16, y: 16 })).toContain('d="M 0 0 L 16 16"');
 });
 
+test('preserves disconnected segments when a vector network has no regions', () => {
+  const bytes = new Uint8Array(12 + 4 * 12 + 2 * 28);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  for (const [x, y] of [[0, 0], [16, 16], [16, 0], [0, 16]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  for (const [start, end] of [[0, 1], [2, 3]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setUint32(offset, start, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setUint32(offset, end, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+  }
+
+  const svg = vectorNetworkToSvg(bytes, { x: 16, y: 16 });
+
+  expect(svg).toContain('M 0 0 L 16 16');
+  expect(svg).toContain('M 16 0 L 0 16');
+});
+
 test('preserves separate regions and uses evenodd fill for holes', () => {
   const bytes = new Uint8Array(12 + 4 * 12 + 4 * 28 + 2 * (8 + 4 + 4 * 4));
   const view = new DataView(bytes.buffer);

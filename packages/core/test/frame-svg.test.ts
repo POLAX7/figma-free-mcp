@@ -1,10 +1,11 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { expect, test } from 'vitest';
 import * as frameSvg from '../src/vectors/frame.js';
 
-const { composeFrameSvg, composeVectorGroupSvg } = frameSvg;
+const { composeBundleVectorGroupSvg, composeFrameSvg, composeVectorGroupSvg } = frameSvg;
 
 test('composes descendant vector paths with their Figma transforms and fills', () => {
   const document = {
@@ -19,6 +20,47 @@ test('composes descendant vector paths with their Figma transforms and fills', (
   expect(composeFrameSvg(document, '1:1', new Map([[7, '<svg><path d="M 0 0 L 10 0 Z" fill="currentColor"/></svg>']]))).toBe(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"><path d="M 0 0 L 10 0 Z" fill="#ff8000" transform="matrix(1 0 0 1 12 8)"/></svg>'
   );
+});
+
+test('prefers the complete binary vector network over an incomplete materialized SVG', async () => {
+  const bundleRoot = await mkdtemp(join(tmpdir(), 'figctx-vector-priority-'));
+  const vectorDirectory = join(bundleRoot, 'assets', 'vectors');
+  await mkdir(vectorDirectory, { recursive: true });
+  const bytes = new Uint8Array(12 + 4 * 12 + 2 * 28);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  for (const [x, y] of [[0, 0], [16, 16], [16, 0], [0, 16]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  for (const [start, end] of [[0, 1], [2, 3]]) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setUint32(offset, start, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setUint32(offset, end, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+  }
+  await writeFile(join(vectorDirectory, 'vector-network-1.bin.gz'), gzipSync(bytes));
+  await writeFile(join(vectorDirectory, 'vector-network-1.svg'), '<svg><path d="M 0 0 L 16 16"/></svg>');
+
+  const document = {
+    contractVersion: '1' as const,
+    rootIds: ['1:1'],
+    nodesById: {
+      '1:1': { id: '1:1', name: 'X', type: 'VECTOR', childIds: [], zIndex: 0, bounds: { x: 16, y: 16 }, assetRefs: [], vectorRef: { blobId: 1, path: 'assets/vectors/vector-network-1.bin.gz', svgPath: 'assets/vectors/vector-network-1.svg', format: 'kiwi-vector-network' as const, compression: 'gzip' as const } }
+    }
+  };
+
+  const svg = await composeBundleVectorGroupSvg(bundleRoot, document, '1:1');
+
+  expect(svg).toContain('M 0 0 L 16 16');
+  expect(svg).toContain('M 16 0 L 0 16');
 });
 test('clips frame contents and applies a mask to following sibling layers', () => {
   const document = {

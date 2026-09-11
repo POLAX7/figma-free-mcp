@@ -103,7 +103,7 @@ function readRegions(view: DataView, initialOffset: number, regionCount: number,
 function buildPaths(vertices: readonly Vertex[], segments: readonly Segment[], regions: readonly number[][][]): string[] {
   const paths: string[] = [];
   const usedSegments = new Set<number>();
-  const groups = regions.length ? regions : [[segments.map((_segment, index) => index)]];
+  const groups = regions.length ? regions : [disconnectedSegmentGroups(segments)];
   for (const region of groups) {
     const regionPath: string[] = [];
     for (const group of region) {
@@ -139,6 +139,32 @@ function buildPaths(vertices: readonly Vertex[], segments: readonly Segment[], r
     }
   }
   return paths;
+}
+
+function disconnectedSegmentGroups(segments: readonly Segment[]): number[][] {
+  const remaining = new Set(segments.map((_segment, index) => index));
+  const groups: number[][] = [];
+  while (remaining.size) {
+    const first = remaining.values().next().value as number;
+    remaining.delete(first);
+    const group = [first];
+    const endpoints = new Set([segments[first]!.start, segments[first]!.end]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const index of remaining) {
+        const segment = segments[index]!;
+        if (!endpoints.has(segment.start) && !endpoints.has(segment.end)) continue;
+        remaining.delete(index);
+        group.push(index);
+        endpoints.add(segment.start);
+        endpoints.add(segment.end);
+        changed = true;
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
 }
 
 function orderSegments(group: readonly number[], segments: readonly Segment[]): Segment[] {

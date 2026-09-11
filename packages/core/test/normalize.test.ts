@@ -10,6 +10,59 @@ const document = normalizeDocument([
 ]);
 
 describe('normalized document', () => {
+  test('expands an overridden child instance to its swapped component', () => {
+    const document = {
+      contractVersion: '1' as const,
+      rootIds: ['1:1'],
+      nodesById: {
+        '1:1': {
+          id: '1:1', name: 'Navigation instance', type: 'INSTANCE', childIds: [], zIndex: 0,
+          assetRefs: [], resolvedComponentId: '1:10',
+          symbolOverrides: [{
+            overriddenSymbolID: { sessionID: 2, localID: 20 },
+            guidPath: { guids: [{ sessionID: 9, localID: 99 }] }
+          }]
+        },
+        '1:10': { id: '1:10', name: 'Navigation', type: 'SYMBOL', childIds: ['1:11'], zIndex: 1, assetRefs: [] },
+        '1:11': { id: '1:11', name: 'Trailing Button', type: 'INSTANCE', childIds: [], zIndex: 2, assetRefs: [], resolvedComponentId: '1:20', node_id: '1:11', overrideKey: '9:99' },
+        '1:20': { id: '1:20', name: 'X', type: 'SYMBOL', childIds: [], zIndex: 3, assetRefs: [] },
+        '2:20': { id: '2:20', name: 'Trash', type: 'SYMBOL', childIds: [], zIndex: 4, assetRefs: [] }
+      }
+    };
+
+    const expanded = expandLocalInstances(document);
+    const trailingButton = expanded.nodesById['1:1::1:11'];
+
+    expect(trailingButton?.resolvedComponentId).toBe('2:20');
+    expect(trailingButton?.main_component_id).toBe('2:20');
+  });
+
+  test('replaces the base child in an already expanded instance', () => {
+    const document = {
+      contractVersion: '1' as const,
+      rootIds: ['1:1'],
+      nodesById: {
+        '1:1': {
+          id: '1:1', name: 'Navigation instance', type: 'INSTANCE', childIds: [], zIndex: 0,
+          assetRefs: [], resolvedComponentId: '1:10', resolvedChildIds: ['1:1::1:11'],
+          symbolOverrides: [{
+            overriddenSymbolID: { sessionID: 2, localID: 20 },
+            guidPath: { guids: [{ sessionID: 9, localID: 99 }] }
+          }]
+        },
+        '1:10': { id: '1:10', name: 'Navigation', type: 'SYMBOL', childIds: ['1:11'], zIndex: 1, assetRefs: [] },
+        '1:11': { id: '1:11', name: 'Trailing Button', type: 'INSTANCE', childIds: [], zIndex: 2, assetRefs: [], resolvedComponentId: '1:20', node_id: '1:11', overrideKey: '9:99' },
+        '1:20': { id: '1:20', name: 'X', type: 'SYMBOL', childIds: [], zIndex: 3, assetRefs: [] },
+        '2:20': { id: '2:20', name: 'Trash', type: 'SYMBOL', childIds: [], zIndex: 4, assetRefs: [] },
+        '1:1::1:11': { id: '1:1::1:11', name: 'Trailing Button', type: 'INSTANCE', childIds: [], zIndex: 2, assetRefs: [], resolvedComponentId: '1:20', main_component_id: '1:20', node_id: '1:11', overrideKey: '9:99', parentId: '1:1' }
+      }
+    };
+
+    const expanded = expandLocalInstances(document);
+
+    expect(expanded.nodesById['1:1::1:11']?.resolvedComponentId).toBe('2:20');
+  });
+
   test('exposes stable component metadata and resolved child access', () => {
     const normalized = normalizeDocument([
       { guid: { sessionID: 10, localID: 1 }, type: 'INSTANCE', name: 'Alert', symbolData: { symbolID: { sessionID: 20, localID: 1 } } },

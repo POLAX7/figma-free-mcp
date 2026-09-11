@@ -105,16 +105,21 @@ export async function composeBundleVectorGroupSvg(bundleRoot: string, document: 
   visit(nodeId);
   const vectorSvgs = new Map(await Promise.all([...vectorPaths].map(async ([blobId, source]) => {
     try {
-      if (source.path) return [blobId, await readFile(join(bundleRoot, source.path), 'utf8')] as const;
-      if (!source.binaryPath) return [blobId, ''] as const;
-      const bytes = gunzipSync(await readFile(join(bundleRoot, source.binaryPath)));
-      const size = renderSizeOf(document, source.node);
-      const svg = size ? vectorNetworkToSvg(bytes, size, {
-        fills: source.node.fills as readonly unknown[] | null | undefined,
-        strokes: source.node.strokes as readonly unknown[] | null | undefined,
-        strokeWeight: source.node.strokeWeight
-      }) : undefined;
-      return [blobId, svg ?? ''] as const;
+      if (source.binaryPath) {
+        try {
+          const bytes = gunzipSync(await readFile(join(bundleRoot, source.binaryPath)));
+          const size = renderSizeOf(document, source.node);
+          const svg = size ? vectorNetworkToSvg(bytes, size, {
+            fills: source.node.fills as readonly unknown[] | null | undefined,
+            strokes: source.node.strokes as readonly unknown[] | null | undefined,
+            strokeWeight: source.node.strokeWeight
+          }) : undefined;
+          if (svg) return [blobId, svg] as const;
+        } catch {
+          // Fall back to the materialized SVG when the binary asset is unavailable.
+        }
+      }
+      return [blobId, source.path ? await readFile(join(bundleRoot, source.path), 'utf8') : ''] as const;
     } catch {
       return [blobId, ''] as const;
     }
