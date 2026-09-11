@@ -170,11 +170,11 @@ describe('normalized document', () => {
     });
   });
 
-  test('does not list a group whose vector SVG fragments are unavailable', () => {
+  test('does not list a group without a vector asset reference', () => {
     const normalized = normalizeDocument([
       { guid: { sessionID: 8, localID: 1 }, type: 'FRAME', size: { x: 20, y: 10 } },
       { guid: { sessionID: 8, localID: 2 }, type: 'VECTOR', parentIndex: 0, size: { x: 20, y: 10 }, vectorData: { vectorNetworkBlob: 1 } }
-    ], { vectorPaths: { 1: 'assets/vectors/vector-network-1.bin.gz' } });
+    ]);
 
     expect(buildNodeContext(normalized, normalized.nodesById['8:1']!).vectorGroups).toEqual([]);
   });

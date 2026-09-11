@@ -362,3 +362,48 @@ test('replaces fill="none" with node fill when vector node has explicit solid fi
   expect(svg).toContain('stroke-width="1.8"');
   expect(svg).not.toContain('fill="none"');
 });
+
+test('uses stroke width as the renderable size of a zero-height stroked vector', () => {
+  const document = {
+    contractVersion: '1' as const,
+    rootIds: ['13:1'],
+    nodesById: {
+      '13:1': {
+        id: '13:1', name: 'Line', type: 'VECTOR', childIds: [], zIndex: 0,
+        bounds: { x: 197, y: 0.000001 }, strokeWeight: 3,
+        strokes: [{ type: 'SOLID', color: { r: 0, g: 1, b: 0 } }], assetRefs: [],
+        vectorRef: { blobId: 4058, path: 'line.bin.gz', svgPath: 'line.svg', format: 'kiwi-vector-network' as const, compression: 'gzip' }
+      }
+    }
+  };
+
+  const svg = composeVectorGroupSvg(document, '13:1', new Map([
+    [4058, '<svg viewBox="0 0 197 0"><path d="M 0 0 L 197 0" fill="none" stroke="currentColor" stroke-width="3"/></svg>']
+  ]));
+
+  expect(svg).toContain('viewBox="0 0 197 3"');
+  expect(svg).toContain('stroke="#00ff00"');
+});
+
+test('uses visible child size when a vector container has a zero dimension', () => {
+  const document = {
+    contractVersion: '1' as const,
+    rootIds: ['14:1'],
+    nodesById: {
+      '14:1': { id: '14:1', name: 'Placeholder', type: 'FRAME', childIds: ['14:2'], zIndex: 0, bounds: { x: 0.000001, y: 27 }, assetRefs: [] },
+      '14:2': {
+        id: '14:2', name: 'Placeholder', type: 'VECTOR', parentId: '14:1', childIds: [], zIndex: 1,
+        bounds: { x: 20, y: 0 }, strokeWeight: 1.2,
+        strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 1 } }], assetRefs: [],
+        vectorRef: { blobId: 3400, path: 'line.bin.gz', svgPath: 'line.svg', format: 'kiwi-vector-network' as const, compression: 'gzip' }
+      }
+    }
+  };
+
+  const svg = composeVectorGroupSvg(document, '14:1', new Map([
+    [3400, '<svg viewBox="0 0 20 0"><path d="M 0 0 L 20 0" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>']
+  ]));
+
+  expect(svg).toContain('viewBox="0 0 20 27"');
+  expect(svg).toContain('stroke="#0000ff"');
+});

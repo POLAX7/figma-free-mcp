@@ -45,10 +45,38 @@ export function vectorNetworkToSvg(bytes: Uint8Array, size: VectorSize, style?: 
 
   const regions = readRegions(view, offset, regionCount, bytes.byteLength);
   if (!regions) return undefined;
-  const paths = buildPaths(vertices, segments, regions);
+  const fitted = fitGeometryToSize(vertices, segments, size);
+  const paths = buildPaths(fitted.vertices, fitted.segments, regions);
   if (!paths.length) return undefined;
   const pathAttributes = outlineAttributes(style);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${number(size.x)} ${number(size.y)}">${paths.map((path) => `<path d="${path}" ${pathAttributes}/>`).join('')}</svg>`;
+}
+
+function fitGeometryToSize(vertices: readonly Vertex[], segments: readonly Segment[], size: VectorSize): { vertices: Vertex[]; segments: Segment[] } {
+  let maxX = 0;
+  let maxY = 0;
+  for (const vertex of vertices) {
+    maxX = Math.max(maxX, vertex.x);
+    maxY = Math.max(maxY, vertex.y);
+  }
+  for (const segment of segments) {
+    const start = vertices[segment.start]!;
+    const end = vertices[segment.end]!;
+    maxX = Math.max(maxX, start.x + segment.tangentStartX, end.x + segment.tangentEndX);
+    maxY = Math.max(maxY, start.y + segment.tangentStartY, end.y + segment.tangentEndY);
+  }
+  const scale = Math.min(1, size.x / maxX, size.y / maxY);
+  if (!Number.isFinite(scale) || scale >= 1) return { vertices: [...vertices], segments: [...segments] };
+  return {
+    vertices: vertices.map((vertex) => ({ x: vertex.x * scale, y: vertex.y * scale })),
+    segments: segments.map((segment) => ({
+      ...segment,
+      tangentStartX: segment.tangentStartX * scale,
+      tangentStartY: segment.tangentStartY * scale,
+      tangentEndX: segment.tangentEndX * scale,
+      tangentEndY: segment.tangentEndY * scale
+    }))
+  };
 }
 
 function readRegions(view: DataView, initialOffset: number, regionCount: number, length: number): number[][][] | undefined {
@@ -74,23 +102,41 @@ function readRegions(view: DataView, initialOffset: number, regionCount: number,
 
 function buildPaths(vertices: readonly Vertex[], segments: readonly Segment[], regions: readonly number[][][]): string[] {
   const paths: string[] = [];
+  const usedSegments = new Set<number>();
   const groups = regions.length ? regions : [[segments.map((_segment, index) => index)]];
   for (const region of groups) {
     const regionPath: string[] = [];
     for (const group of region) {
-    const ordered = orderSegments(group, segments);
-    const first = ordered[0];
-    if (!first) continue;
-    regionPath.push(`M ${point(vertices[first.start]!)}`);
-    for (const segment of ordered) {
-      const start = vertices[segment.start]!;
-      const end = vertices[segment.end]!;
-      const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
-      regionPath.push(curved ? `C ${number(start.x + segment.tangentStartX)} ${number(start.y + segment.tangentStartY)} ${number(end.x + segment.tangentEndX)} ${number(end.y + segment.tangentEndY)} ${point(end)}` : `L ${point(end)}`);
-    }
-    if (regions.length) regionPath.push('Z');
+      for (const index of group) usedSegments.add(index);
+      const ordered = orderSegments(group, segments);
+      const first = ordered[0];
+      if (!first) continue;
+      regionPath.push(`M ${point(vertices[first.start]!)}`);
+      for (const segment of ordered) {
+        const start = vertices[segment.start]!;
+        const end = vertices[segment.end]!;
+        const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
+        regionPath.push(curved ? `C ${number(start.x + segment.tangentStartX)} ${number(start.y + segment.tangentStartY)} ${number(end.x + segment.tangentEndX)} ${number(end.y + segment.tangentEndY)} ${point(end)}` : `L ${point(end)}`);
+      }
+      if (regions.length) regionPath.push('Z');
     }
     if (regionPath.length) paths.push(regionPath.join(' '));
+  }
+  if (regions.length) {
+    for (let index = 0; index < segments.length; index += 1) {
+      if (usedSegments.has(index)) continue;
+      const ordered = orderSegments([index], segments);
+      const first = ordered[0];
+      if (!first) continue;
+      const path = [`M ${point(vertices[first.start]!)}`];
+      for (const segment of ordered) {
+        const start = vertices[segment.start]!;
+        const end = vertices[segment.end]!;
+        const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
+        path.push(curved ? `C ${number(start.x + segment.tangentStartX)} ${number(start.y + segment.tangentStartY)} ${number(end.x + segment.tangentEndX)} ${number(end.y + segment.tangentEndY)} ${point(end)}` : `L ${point(end)}`);
+      }
+      paths.push(path.join(' '));
+    }
   }
   return paths;
 }

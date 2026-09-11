@@ -54,6 +54,9 @@ and MCP context consumed by that workflow.
 - **Stroke & Stroke Alignment**: Preserve stroke colors, stroke width, and `strokeAlign` (`INSIDE`, `CENTER`, `OUTSIDE`) calculations.
 - **Outside Stroke Bounds**: Expand rectangle geometry and emit negative `x`/`y` offsets for `OUTSIDE` strokes, preventing the outer border from being rendered at the original bounds or silently clipped.
 - **Rounded Outside Strokes**: Expand rounded-rectangle corner radii together with `OUTSIDE` strokes so the outer border preserves the intended corner geometry.
+- **Standalone Vector Segments**: Preserve vector-network segments that are not included in a filled region, so independent lines are not silently omitted from the SVG output.
+- **Binary Vector Fallback**: Decode `.bin.gz` vector networks on demand when a bundle does not contain a materialized SVG path.
+- **Degenerate Vector Bounds**: Keep stroked vectors with zero or near-zero dimensions renderable by deriving a usable output size from stroke width or visible children.
 - **Border/Outline Layer Recognition**: Automatically treat layers named `border` or `outline` with strokes as `fill="none"` to avoid obscuring underlying layers.
 - **Affine Transform Bugfix**: Corrected affine matrix multiplication calculation (`multiply`) to prevent skew/rotation errors during nested vector composition.
 - **Render Diagnostics**: The `figctx render` CLI command outputs structured warnings to `stderr` when skipping unsupported layer attributes rather than failing silently.
@@ -172,9 +175,11 @@ all references attached within the requested subtree.
 
 The vector renderer also maintains regression coverage for nested affine
 transforms, external-component fallbacks, variable color aliases, geometric
-shapes, masks, unsupported-layer warnings, and `INSIDE`/`CENTER`/`OUTSIDE`
-stroke behavior. In particular, rectangle `OUTSIDE` strokes are tested for
-both expanded dimensions, negative offsets, and rounded-corner radii. These automated tests do not
+shapes, masks, unsupported-layer warnings, standalone vector segments, and
+`INSIDE`/`CENTER`/`OUTSIDE` stroke behavior. In particular, rectangle `OUTSIDE`
+strokes are tested for both expanded dimensions, negative offsets, and
+rounded-corner radii; vector networks with filled regions are tested to retain
+segments outside those regions. These automated tests do not
 replace validation against a corpus of real `.fig` bundles and rendered PNG
 pixel comparisons; those remain additional verification steps for new image
 types and previously untested component combinations.

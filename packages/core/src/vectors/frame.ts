@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
 import { join } from 'node:path';
 import type { AgentDocument, AgentNode } from '../normalize/document.js';
+import { vectorNetworkToSvg } from './svg.js';
 
 type Matrix = readonly [number, number, number, number, number, number];
 
@@ -62,7 +64,7 @@ export function findVectorGroups(document: AgentDocument, rootId: string): Vecto
     const node = document.nodesById[nodeId];
     if (!node || node.visible === false) return;
     const value = status(nodeId);
-    const size = sizeOf(node);
+    const size = renderSizeOf(document, node);
     if (value.vectorOnly && value.vectorCount && !parentVectorOnly && size) groups.push({ nodeId, name: node.name, bounds: size, vectorCount: value.vectorCount });
     else {
       const childIds = node.resolvedChildIds && node.resolvedChildIds.length ? node.resolvedChildIds : node.childIds;
@@ -76,7 +78,7 @@ export function findVectorGroups(document: AgentDocument, rootId: string): Vecto
 /** Composes one vector-only group into a self-contained SVG. */
 export function composeVectorGroupSvg(document: AgentDocument, nodeId: string, vectorSvgs: ReadonlyMap<number, string>, warnings?: string[]): string | undefined {
   const root = document.nodesById[nodeId];
-  const size = sizeOf(root);
+  const size = renderSizeOf(document, root);
   if (!root || !size) return undefined;
   const composition: Composition = { vectorSvgs, defs: [], nextDefinitionId: 0, skipped: [] };
   const content = withOpacity(renderContainer(document, root, identity, composition, true), root.opacity);
@@ -92,18 +94,27 @@ export function composeVectorGroupSvg(document: AgentDocument, nodeId: string, v
 
 /** Reads only a group's extracted SVG fragments and composes them on demand. */
 export async function composeBundleVectorGroupSvg(bundleRoot: string, document: AgentDocument, nodeId: string, warnings?: string[]): Promise<string | undefined> {
-  const vectorPaths = new Map<number, string>();
+  const vectorPaths = new Map<number, { node: AgentNode; path?: string; binaryPath?: string }>();
   const visit = (id: string) => {
     const node = document.nodesById[id];
     if (!node) return;
-    if (node.vectorRef?.svgPath) vectorPaths.set(node.vectorRef.blobId, node.vectorRef.svgPath);
+    if (node.vectorRef) vectorPaths.set(node.vectorRef.blobId, { node, path: node.vectorRef.svgPath, binaryPath: node.vectorRef.path });
     const childIds = node.resolvedChildIds && node.resolvedChildIds.length ? node.resolvedChildIds : node.childIds;
     for (const childId of childIds) visit(childId);
   };
   visit(nodeId);
-  const vectorSvgs = new Map(await Promise.all([...vectorPaths].map(async ([blobId, path]) => {
+  const vectorSvgs = new Map(await Promise.all([...vectorPaths].map(async ([blobId, source]) => {
     try {
-      return [blobId, await readFile(join(bundleRoot, path), 'utf8')] as const;
+      if (source.path) return [blobId, await readFile(join(bundleRoot, source.path), 'utf8')] as const;
+      if (!source.binaryPath) return [blobId, ''] as const;
+      const bytes = gunzipSync(await readFile(join(bundleRoot, source.binaryPath)));
+      const size = renderSizeOf(document, source.node);
+      const svg = size ? vectorNetworkToSvg(bytes, size, {
+        fills: source.node.fills as readonly unknown[] | null | undefined,
+        strokes: source.node.strokes as readonly unknown[] | null | undefined,
+        strokeWeight: source.node.strokeWeight
+      }) : undefined;
+      return [blobId, svg ?? ''] as const;
     } catch {
       return [blobId, ''] as const;
     }
@@ -268,6 +279,26 @@ function pathElements(svg: string, matrix: Matrix, fill: string, stroke: string,
 function sizeOf(node: AgentNode | undefined): { x: number; y: number } | undefined {
   const value = node?.bounds;
   return value && typeof value === 'object' && typeof (value as { x?: unknown }).x === 'number' && typeof (value as { y?: unknown }).y === 'number' && (value as { x: number }).x > 0 && (value as { y: number }).y > 0 ? value as { x: number; y: number } : undefined;
+}
+function renderSizeOf(document: AgentDocument, node: AgentNode | undefined, visited = new Set<string>()): { x: number; y: number } | undefined {
+  if (!node || visited.has(node.id)) return undefined;
+  visited.add(node.id);
+  const raw = node.bounds;
+  let x = raw && typeof raw === 'object' && typeof (raw as { x?: unknown }).x === 'number' ? Math.max(0, (raw as { x: number }).x) : 0;
+  let y = raw && typeof raw === 'object' && typeof (raw as { y?: unknown }).y === 'number' ? Math.max(0, (raw as { y: number }).y) : 0;
+  if (x <= 0.001 || y <= 0.001) {
+    const stroke = strokeWeightOf(node) ?? 0;
+    if (x <= 0.001 && stroke > 0) x = stroke;
+    if (y <= 0.001 && stroke > 0) y = stroke;
+    const childIds = node.resolvedChildIds && node.resolvedChildIds.length ? node.resolvedChildIds : node.childIds;
+    for (const childId of childIds) {
+      const childSize = renderSizeOf(document, document.nodesById[childId], new Set(visited));
+      if (!childSize) continue;
+      if (x <= 0.001) x = Math.max(x, childSize.x);
+      if (y <= 0.001) y = Math.max(y, childSize.y);
+    }
+  }
+  return x > 0.001 && y > 0.001 ? { x, y } : undefined;
 }
 function rectPath(size: { x: number; y: number } | undefined, matrix: Matrix, fill: string): string {
   return size ? `<path d="M 0 0 H ${number(size.x)} V ${number(size.y)} H 0 Z" fill="${fill}" transform="matrix(${matrix.map(number).join(' ')})"/>` : '';
