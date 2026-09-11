@@ -6,6 +6,7 @@ export interface VectorStyle {
   strokeWeight?: number;
   strokeCap?: string | null;
   strokeJoin?: string | null;
+  cornerRadius?: number;
 }
 
 interface Vertex { x: number; y: number; }
@@ -45,10 +46,47 @@ export function vectorNetworkToSvg(bytes: Uint8Array, size: VectorSize, style?: 
 
   const regions = readRegions(view, offset, regionCount, bytes.byteLength);
   if (!regions) return undefined;
-  const paths = buildPaths(vertices, segments, regions);
+  const fitted = fitGeometryToSize(vertices, segments, size);
+  const paths = buildPaths(fitted.vertices, fitted.segments, regions);
   if (!paths.length) return undefined;
   const pathAttributes = outlineAttributes(style);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${number(size.x)} ${number(size.y)}">${paths.map((path) => `<path d="${path}" ${pathAttributes}/>`).join('')}</svg>`;
+}
+
+function fitGeometryToSize(vertices: readonly Vertex[], segments: readonly Segment[], size: VectorSize): { vertices: Vertex[]; segments: Segment[] } {
+  let maxX = 0;
+  let maxY = 0;
+  for (const vertex of vertices) {
+    maxX = Math.max(maxX, vertex.x);
+    maxY = Math.max(maxY, vertex.y);
+  }
+  for (const segment of segments) {
+    const start = vertices[segment.start]!;
+    const end = vertices[segment.end]!;
+    maxX = Math.max(maxX, start.x + segment.tangentStartX, end.x + segment.tangentEndX);
+    maxY = Math.max(maxY, start.y + segment.tangentStartY, end.y + segment.tangentEndY);
+  }
+  const hasX = maxX > 0.001 && size.x > 0.001;
+  const hasY = maxY > 0.001 && size.y > 0.001;
+  let scale = 1;
+  if (hasX && hasY) {
+    scale = Math.min(size.x / maxX, size.y / maxY);
+  } else if (hasX) {
+    scale = size.x / maxX;
+  } else if (hasY) {
+    scale = size.y / maxY;
+  }
+  if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.0001) return { vertices: [...vertices], segments: [...segments] };
+  return {
+    vertices: vertices.map((vertex) => ({ x: vertex.x * scale, y: vertex.y * scale })),
+    segments: segments.map((segment) => ({
+      ...segment,
+      tangentStartX: segment.tangentStartX * scale,
+      tangentStartY: segment.tangentStartY * scale,
+      tangentEndX: segment.tangentEndX * scale,
+      tangentEndY: segment.tangentEndY * scale
+    }))
+  };
 }
 
 function readRegions(view: DataView, initialOffset: number, regionCount: number, length: number): number[][][] | undefined {
@@ -74,25 +112,72 @@ function readRegions(view: DataView, initialOffset: number, regionCount: number,
 
 function buildPaths(vertices: readonly Vertex[], segments: readonly Segment[], regions: readonly number[][][]): string[] {
   const paths: string[] = [];
-  const groups = regions.length ? regions : [[segments.map((_segment, index) => index)]];
+  const usedSegments = new Set<number>();
+  const groups = regions.length ? regions : [disconnectedSegmentGroups(segments)];
   for (const region of groups) {
     const regionPath: string[] = [];
     for (const group of region) {
-    const ordered = orderSegments(group, segments);
-    const first = ordered[0];
-    if (!first) continue;
-    regionPath.push(`M ${point(vertices[first.start]!)}`);
-    for (const segment of ordered) {
-      const start = vertices[segment.start]!;
-      const end = vertices[segment.end]!;
-      const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
-      regionPath.push(curved ? `C ${number(start.x + segment.tangentStartX)} ${number(start.y + segment.tangentStartY)} ${number(end.x + segment.tangentEndX)} ${number(end.y + segment.tangentEndY)} ${point(end)}` : `L ${point(end)}`);
-    }
-    if (regions.length) regionPath.push('Z');
+      for (const index of group) usedSegments.add(index);
+      const ordered = orderSegments(group, segments);
+      const first = ordered[0];
+      if (!first) continue;
+      regionPath.push(`M ${point(vertices[first.start]!)}`);
+      let previousEnd = first.start;
+      for (const segment of ordered) {
+        if (segment.start !== previousEnd) regionPath.push(`M ${point(vertices[segment.start]!)}`);
+        previousEnd = segment.end;
+        const start = vertices[segment.start]!;
+        const end = vertices[segment.end]!;
+        const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
+        regionPath.push(curved ? `C ${number(start.x + segment.tangentStartX)} ${number(start.y + segment.tangentStartY)} ${number(end.x + segment.tangentEndX)} ${number(end.y + segment.tangentEndY)} ${point(end)}` : `L ${point(end)}`);
+      }
+      if (regions.length) regionPath.push('Z');
     }
     if (regionPath.length) paths.push(regionPath.join(' '));
   }
+  if (regions.length) {
+    for (let index = 0; index < segments.length; index += 1) {
+      if (usedSegments.has(index)) continue;
+      const ordered = orderSegments([index], segments);
+      const first = ordered[0];
+      if (!first) continue;
+      const path = [`M ${point(vertices[first.start]!)}`];
+      for (const segment of ordered) {
+        const start = vertices[segment.start]!;
+        const end = vertices[segment.end]!;
+        const curved = Math.abs(segment.tangentStartX) > .001 || Math.abs(segment.tangentStartY) > .001 || Math.abs(segment.tangentEndX) > .001 || Math.abs(segment.tangentEndY) > .001;
+        path.push(curved ? `C ${number(start.x + segment.tangentStartX)} ${number(start.y + segment.tangentStartY)} ${number(end.x + segment.tangentEndX)} ${number(end.y + segment.tangentEndY)} ${point(end)}` : `L ${point(end)}`);
+      }
+      paths.push(path.join(' '));
+    }
+  }
   return paths;
+}
+
+function disconnectedSegmentGroups(segments: readonly Segment[]): number[][] {
+  const remaining = new Set(segments.map((_segment, index) => index));
+  const groups: number[][] = [];
+  while (remaining.size) {
+    const first = remaining.values().next().value as number;
+    remaining.delete(first);
+    const group = [first];
+    const endpoints = new Set([segments[first]!.start, segments[first]!.end]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const index of remaining) {
+        const segment = segments[index]!;
+        if (!endpoints.has(segment.start) && !endpoints.has(segment.end)) continue;
+        remaining.delete(index);
+        group.push(index);
+        endpoints.add(segment.start);
+        endpoints.add(segment.end);
+        changed = true;
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
 }
 
 function orderSegments(group: readonly number[], segments: readonly Segment[]): Segment[] {
@@ -103,7 +188,12 @@ function orderSegments(group: readonly number[], segments: readonly Segment[]): 
   let end = first.end;
   while (remaining.length) {
     const nextIndex = remaining.findIndex((segment) => segment.start === end || segment.end === end);
-    if (nextIndex < 0) break;
+    if (nextIndex < 0) {
+      const next = remaining.shift()!;
+      ordered.push(next);
+      end = next.end;
+      continue;
+    }
     const next = remaining.splice(nextIndex, 1)[0]!;
     const oriented = next.start === end ? next : reverseSegment(next);
     ordered.push(oriented);
@@ -119,8 +209,10 @@ function reverseSegment(segment: Segment): Segment {
 function outlineAttributes(style: VectorStyle | undefined): string {
   if (!style || !hasVisiblePaint(style.strokes) || hasVisiblePaint(style.fills)) return 'fill="currentColor" fill-rule="evenodd"';
   const weight = typeof style.strokeWeight === 'number' && style.strokeWeight > 0 ? number(style.strokeWeight) : '1';
-  const cap = svgLineValue(style.strokeCap, 'butt');
-  const join = svgLineValue(style.strokeJoin, 'miter');
+  const rounded = typeof style.cornerRadius === 'number' && style.cornerRadius > 0;
+  const cap = svgLineValue(style.strokeCap, rounded ? 'round' : 'butt');
+  const sourceJoin = svgLineValue(style.strokeJoin, 'miter');
+  const join = rounded && sourceJoin === 'miter' ? 'round' : sourceJoin;
   return `fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="${cap}" stroke-linejoin="${join}"`;
 }
 

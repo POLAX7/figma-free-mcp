@@ -32,20 +32,41 @@ Inspector repository contains the inspection decisions, AST pruning, cache and
 rate-limit handling, while this repository provides the local `.fig` extraction
 and MCP context consumed by that workflow.
 
-The changes in this fork include:
+### Key Capabilities & Recent Bug Fixes
 
-- Preserve an instance's original `node_id` and `main_component_id` from
-  `symbolData`, while keeping the raw `childIds` unchanged for diagnostics.
-- Resolve local `SYMBOL` definitions into per-instance `resolvedChildIds`,
-  including nested components with cycle protection and isolated IDs when the
-  same component is used more than once.
-- Apply text overrides by their `guidPath` target instead of relying on the
-  order in which Figma stores overrides. Both `textData.characters` and the
-  compact override form are supported.
-- Make node context traversal and bounded inspection use the resolved children,
-  and report the component identity and whether the instance was expanded.
-- Add normalization tests covering local expansion, nested cycles, repeated
-  component instances, and target-specific text overrides.
+#### 1. Component Resolution & Instance Expansion
+- **Preserve Component Metadata**: Preserve an instance's original `node_id`, `main_component_id`, `sourceLibraryKey`, and `componentKey` from `symbolData`, while keeping the raw `childIds` unchanged for diagnostics.
+- **Local Instance Expansion**: Resolve local `SYMBOL` definitions into per-instance `resolvedChildIds`, including nested components with cycle protection and isolated IDs when the same component is used repeatedly.
+- **Symbol Component Overrides**: Apply `symbolOverrides.overriddenSymbolID` to the expanded instance tree, so an overridden trailing control resolves to its actual component (for example, Trash instead of the base Cancel/X component).
+- **Target-Specific Text Overrides**: Apply text overrides by their `guidPath` target (`instanceTextOverridesByNodeId`) instead of relying on array ordering in Figma's export.
+- **Bounded Context Traversal**: Make node context traversal and bounded inspection use resolved children, reporting component identity, source libraries, and expansion status.
+
+#### 2. Cross-Bundle & Design System Resolution
+- **Peer Bundle Discovery**: Automatically detect neighboring bundles (such as shared external Design Systems) located in parent directories.
+- **Cross-Bundle Component Indexing**: Build an index across primary and peer bundles keyed by Figma `componentKey`, enabling direct lookups via `search_nodes` or `inspect_node --node 'comp:<key>'`.
+- **Instance Swap Resolution**: Support instance swaps referencing external design system components (`componentPropAssignments` and `symbolOverrides`), resolving substituted components across peer bundles when exporting SVGs or inspecting nodes.
+- **Transparent Asset & Vector Fallback**: When an instance in the primary file references an external component, `get_vector_svg` and `get_asset` seamlessly fall back to peer bundles to fetch vector geometry or image assets.
+
+#### 3. Accurate Color & Variable Alias Resolution
+- **Figma Variable Alias Tracking**: Recursively follow variable reference chains (`colorVar` with `ALIAS` dataType) to resolve their ultimate RGBA color values (`buildVariableColorResolver`), eliminating stale raw fallback colors (such as default `#d9d9d9` gray).
+- **Symbol Override Paints**: Accurately resolve fill and stroke variable colors inside `symbolOverrides` for instantiated components.
+
+#### 4. High-Fidelity Vector & SVG Rendering
+- **Symbol & Component Frame Preservation**: Render vector groups against their declared symbol or instance frame bounds as the SVG canvas/viewBox (e.g., 24×24 or 30×30), preserving inner margins, padding, and transforms instead of truncating the viewBox to leaf vector tight bounding boxes.
+- **1D & Dimension Vector Geometry Scaling**: Correctly scale 1D straight horizontal/vertical lines and scaled vectors in `fitGeometryToSize` so lines span their intended dimensions instead of remaining constrained to unscaled raw coordinates.
+- **Per-Node Vector Geometry**: Key vector SVGs by node ID so multiple vector instances sharing the same Kiwi binary blob can each render at their respective sizes and stroke weights.
+- **Shape & Outline Preservation**: Support geometric shapes (`RECTANGLE`, `ROUNDED_RECTANGLE`, `ELLIPSE`, `FRAME`) with proper SVG representations (`<rect>`, `<ellipse>`).
+- **Stroke & Stroke Alignment**: Preserve stroke colors, stroke width, and `strokeAlign` (`INSIDE`, `CENTER`, `OUTSIDE`) calculations.
+- **Outside Stroke Bounds**: Expand rectangle geometry and emit negative `x`/`y` offsets for `OUTSIDE` strokes, preventing the outer border from being rendered at the original bounds or silently clipped.
+- **Rounded Outside Strokes**: Expand rounded-rectangle corner radii together with `OUTSIDE` strokes so the outer border preserves the intended corner geometry.
+- **Standalone Vector Segments**: Preserve vector-network segments that are not included in a filled region, so independent lines are not silently omitted from the SVG output.
+- **Binary Vector Fallback**: Prefer the complete `.bin.gz` vector network when a materialized SVG is missing or incomplete, and fall back to the materialized SVG only when binary decoding is unavailable.
+- **Disconnected Vector Paths**: Preserve separate, disconnected vector-network segments when the network has no filled regions, preventing an X or multi-line icon from collapsing to a single slash.
+- **Rounded Vector Strokes**: Preserve rounded cap/join output for vector nodes with Figma `cornerRadius`; inherited `MITER` defaults no longer erase the rounded appearance of Design System icons.
+- **Degenerate Vector Bounds**: Keep stroked vectors with zero or near-zero dimensions renderable by deriving a usable output size from stroke width or visible children.
+- **Border/Outline Layer Recognition**: Automatically treat layers named `border` or `outline` with strokes as `fill="none"` to avoid obscuring underlying layers.
+- **Affine Transform Bugfix**: Corrected affine matrix multiplication calculation (`multiply`) to prevent skew/rotation errors during nested vector composition.
+- **Render Diagnostics**: The `figctx render` CLI command outputs structured warnings to `stderr` when skipping unsupported layer attributes rather than failing silently.
 
 These changes keep offline inspection local-first; the Inspector workflow only
 uses a cloud fallback when the local bundle cannot resolve the component.
@@ -59,6 +80,18 @@ figctx search .figctx/design "checkout" --type TEXT --limit 10
 figctx pack .figctx/design --node <node-id> --format codex
 figctx render .figctx/design --node <node-id> > artwork.svg
 ```
+
+When the renderer changes, re-extract the source `.fig` into a new bundle so
+materialized vector SVGs and `document.agent.json` use the same parser build:
+
+```sh
+node packages/cli/dist/main.js extract DesignSystem.fig --out .figctx/design-system-full-v4
+node packages/cli/dist/main.js render .figctx/design-system-full-v4 --node 955:692 > icon.svg
+```
+
+Restart any long-running MCP client after changing its `--root` or rebuilding
+the server. The configured root must contain the freshly extracted
+`document.agent.json`, not only the raw `.fig` file.
 
 ## Install and use
 
@@ -158,6 +191,17 @@ figctx doctor .figctx/design
 `compare` writes `comparisons/<node-id>/diff.png` and `report.json`, including
 the mismatch pixel count and ratio. `pack` and MCP `get_frame_bundle` return
 all references attached within the requested subtree.
+
+The vector renderer also maintains regression coverage for nested affine
+transforms, external-component fallbacks, variable color aliases, geometric
+shapes, masks, unsupported-layer warnings, standalone vector segments, and
+`INSIDE`/`CENTER`/`OUTSIDE` stroke behavior. In particular, rectangle `OUTSIDE`
+strokes are tested for both expanded dimensions, negative offsets, and
+rounded-corner radii; vector networks with filled regions are tested to retain
+segments outside those regions. These automated tests do not
+replace validation against a corpus of real `.fig` bundles and rendered PNG
+pixel comparisons; those remain additional verification steps for new image
+types and previously untested component combinations.
 
 `--node` accepts canonical bundle IDs (`1:2`), Figma URL IDs (`1-2`), and a
 Figma URL containing `node-id`. Resolution is local to the extracted bundle;

@@ -23,6 +23,10 @@ export interface AgentNode {
   layout?: Record<string, unknown>;
   fills?: unknown;
   strokes?: unknown;
+  strokeWeight?: number;
+  strokeCap?: string;
+  strokeJoin?: string;
+  strokeAlign?: string;
   effects?: unknown;
   typography?: Record<string, unknown>;
   styleRefs?: StyleReferences;
@@ -33,8 +37,19 @@ export interface AgentNode {
   blendMode?: unknown;
   mask?: boolean;
   frameMaskDisabled?: boolean;
+  resizeToFit?: boolean;
+  cornerRadius?: number;
   assetRefs: AssetReference[];
   vectorRef?: VectorReference;
+  /** originFileKey of the external library this component was imported from. */
+  sourceLibraryKey?: string;
+  /** Cross-file unique component identifier for resolving external library components. */
+  componentKey?: string;
+  overrideKey?: string;
+  symbolOverrides?: Array<Record<string, unknown>>;
+  componentPropAssignments?: Array<Record<string, unknown>>;
+  componentPropRefs?: Array<Record<string, unknown>>;
+  resolutionError?: string;
 }
 
 export interface TextSegment { start: number; end: number; text: string; styleId: number; typography: Record<string, unknown>; fills?: unknown; }
@@ -43,17 +58,27 @@ export interface VariableBinding { field: string; variableId: string; resolvedTy
 export interface AssetReference { hash: string; path: string; kind: 'image-fill'; }
 export interface VectorReference { blobId: number; path: string; format: 'kiwi-vector-network'; compression: 'gzip'; svgPath?: string; }
 
+export type VariableColorResolver = (ref: unknown) => { r: number; g: number; b: number; a?: number } | undefined;
+
 export interface AgentDocument {
   contractVersion: '1';
   originFileKey?: string;
   rootIds: string[];
   nodesById: Record<string, AgentNode>;
+  variableResolver?: VariableColorResolver;
 }
 
-export interface NormalizeOptions { originFileKey?: string; assetPaths?: Readonly<Record<string, string>>; vectorPaths?: Readonly<Record<number, string>>; vectorSvgPaths?: Readonly<Record<number, string>>; }
+export interface NormalizeOptions {
+  originFileKey?: string;
+  assetPaths?: Readonly<Record<string, string>>;
+  vectorPaths?: Readonly<Record<number, string>>;
+  vectorSvgPaths?: Readonly<Record<number, string>>;
+  variableResolver?: VariableColorResolver;
+}
 
 export function normalizeDocument(changes: readonly Record<string, unknown>[], options: NormalizeOptions = {}): AgentDocument {
-  const nodes = changes.map((change, zIndex) => normalizeNode(change, zIndex, options.assetPaths, options.vectorPaths, options.vectorSvgPaths));
+  const resolveVar = options.variableResolver ?? buildVariableColorResolver(changes);
+  const nodes = changes.map((change, zIndex) => normalizeNode(change, zIndex, options.assetPaths, options.vectorPaths, options.vectorSvgPaths, resolveVar));
   const nodesById = Object.fromEntries(nodes.map((node) => [node.id, node]));
   const roots: string[] = [];
   changes.forEach((change, index) => {
@@ -65,7 +90,7 @@ export function normalizeDocument(changes: readonly Record<string, unknown>[], o
     if (!parent || parent.id === node.id) roots.push(node.id);
     else { node.parentId = parent.id; parent.childIds.push(node.id); }
   });
-  return { contractVersion: '1', ...(options.originFileKey ? { originFileKey: options.originFileKey } : {}), rootIds: roots, nodesById };
+  return { contractVersion: '1', ...(options.originFileKey ? { originFileKey: options.originFileKey } : {}), rootIds: roots, nodesById, ...(resolveVar ? { variableResolver: resolveVar } : {}) };
 }
 
 /** Returns the child IDs consumers should traverse after local expansion. */
@@ -74,34 +99,62 @@ export function effectiveChildIds(node: AgentNode): string[] {
 }
 
 /** Expands local component instances while preserving the raw instance hierarchy. */
-export function expandLocalInstances(document: AgentDocument): AgentDocument {
+export function expandLocalInstances(document: AgentDocument, assetPaths?: Readonly<Record<string, string>>, variableResolver?: VariableColorResolver): AgentDocument {
+  const resolveVar = variableResolver ?? document.variableResolver;
   const nodesById = { ...document.nodesById };
   const pending: Array<{ node: AgentNode; componentPath: Set<string> }> = Object.values(document.nodesById).map((node) => ({ node, componentPath: new Set<string>() }));
-  for (let index = 0; index < pending.length; index += 1) {
-    const { node: instance, componentPath } = pending[index]!;
-    if (instance.type !== 'INSTANCE' || instance.childIds.length || instance.resolvedChildIds || !instance.resolvedComponentId) continue;
-    const component = document.nodesById[instance.resolvedComponentId];
-    if (!component) continue;
-    if (componentPath.has(instance.resolvedComponentId)) continue;
-    const nextPath = new Set(componentPath).add(instance.resolvedComponentId);
-    const textOverrides = instance.instanceTextOverrides ?? [];
-    const sourceTexts = descendantIds(document, component.childIds).map((id) => document.nodesById[id]).filter((node): node is AgentNode => Boolean(node?.text !== undefined));
-    const textBySourceId = new Map(sourceTexts.map((node, index) => [node.id, textOverrides[index]]));
-    Object.entries(instance.instanceTextOverridesByNodeId ?? {}).forEach(([sourceId, text]) => textBySourceId.set(sourceId, text));
-    const clone = (sourceId: string, parentId: string): string => {
-      const source = document.nodesById[sourceId]!;
-      const id = `${instance.id}::${source.id}`;
-      // Clone the component definition's raw tree. A source node may already
-      // carry resolved children from another instance and must not leak that
-      // expansion into this instance.
-      const childIds = source.childIds.map((childId) => clone(childId, id));
-      const text = textBySourceId.get(source.id);
-      nodesById[id] = { ...source, id, parentId, childIds, ...(text === undefined ? {} : { text }) };
-      if (nodesById[id]!.type === 'INSTANCE' && nodesById[id]!.resolvedComponentId && !nextPath.has(nodesById[id]!.resolvedComponentId!)) pending.push({ node: nodesById[id]!, componentPath: nextPath });
-      return id;
-    };
-    instance.resolvedChildIds = component.childIds.map((childId) => clone(childId, instance.id));
-  }
+  const expandPending = () => {
+    for (let index = 0; index < pending.length; index += 1) {
+      const { node: instance, componentPath } = pending[index]!;
+      if (instance.type !== 'INSTANCE' || instance.childIds.length || instance.resolvedChildIds || !instance.resolvedComponentId) continue;
+      const component = document.nodesById[instance.resolvedComponentId];
+      if (!component) continue;
+      if (componentPath.has(instance.resolvedComponentId)) continue;
+      const nextPath = new Set(componentPath).add(instance.resolvedComponentId);
+      const textOverrides = instance.instanceTextOverrides ?? [];
+      const sourceTexts = descendantIds(document, component.childIds).map((id) => document.nodesById[id]).filter((node): node is AgentNode => Boolean(node?.text !== undefined));
+      const textBySourceId = new Map(sourceTexts.map((node, index) => [node.id, textOverrides[index]]));
+      Object.entries(instance.instanceTextOverridesByNodeId ?? {}).forEach(([sourceId, text]) => textBySourceId.set(sourceId, text));
+      const componentSwaps = new Map(
+        (instance.symbolOverrides ?? []).flatMap((override) => {
+          const path = record(override.guidPath)?.guids;
+          const overriddenSymbol = record(override.overriddenSymbolID);
+          if (!Array.isArray(path) || !path.length || !overriddenSymbol) return [];
+          const targetId = guidId(path[path.length - 1]);
+          const componentId = idFromGuid(overriddenSymbol, 0);
+          return targetId && componentId ? [[targetId, componentId] as const] : [];
+        })
+      );
+      const clone = (sourceId: string, parentId: string): string => {
+        const source = document.nodesById[sourceId]!;
+        const id = `${instance.id}::${source.id}`;
+        // Clone the component definition's raw tree. A source node may already
+        // carry resolved children from another instance and must not leak that
+        // expansion into this instance.
+        const propertyRef = source.componentPropRefs?.find((ref) => ref.componentPropNodeField === 'OVERRIDDEN_SYMBOL_ID');
+        const propertyId = guidId(propertyRef?.defID);
+        const assignment = propertyId ? instance.componentPropAssignments?.find((item) => guidId(item.defID) === propertyId) : undefined;
+        const propertySymbol = record(record(record(assignment?.varValue)?.value)?.symbolIdValue)?.guid;
+        const swappedComponentId = componentSwaps.get(source.id) ?? componentSwaps.get(source.node_id ?? '') ?? componentSwaps.get(source.overrideKey ?? '') ?? guidId(propertySymbol);
+        const childIds = swappedComponentId ? [] : source.childIds.map((childId) => clone(childId, id));
+        const text = textBySourceId.get(source.id);
+        nodesById[id] = {
+          ...source,
+          id,
+          parentId,
+          childIds,
+          resolvedChildIds: undefined,
+          resolutionError: swappedComponentId && !document.nodesById[swappedComponentId] ? `Unresolved icon swap on ${instance.id}/${source.id}: ${swappedComponentId}` : undefined,
+          ...(swappedComponentId ? { resolvedComponentId: swappedComponentId, main_component_id: swappedComponentId, resolvedChildIds: undefined } : {}),
+          ...(text === undefined ? {} : { text })
+        };
+        if (nodesById[id]!.type === 'INSTANCE' && nodesById[id]!.resolvedComponentId && !nextPath.has(nodesById[id]!.resolvedComponentId!)) pending.push({ node: nodesById[id]!, componentPath: nextPath });
+        return id;
+      };
+      instance.resolvedChildIds = component.childIds.map((childId) => clone(childId, instance.id));
+    }
+  };
+  expandPending();
   for (const instance of Object.values(document.nodesById)) {
     if (instance.type !== 'INSTANCE' || !instance.resolvedChildIds || !instance.resolvedComponentId) continue;
     const component = document.nodesById[instance.resolvedComponentId];
@@ -115,7 +168,144 @@ export function expandLocalInstances(document: AgentDocument): AgentDocument {
       if (targetId) nodesById[targetId] = { ...nodesById[targetId]!, text };
     });
   }
+
+  const instanceDepth = (node: AgentNode): number => {
+    let depth = 0;
+    let curr: AgentNode | undefined = node;
+    while (curr?.parentId && nodesById[curr.parentId]) {
+      depth += 1;
+      curr = nodesById[curr.parentId];
+    }
+    return depth;
+  };
+
+  const instancesWithOverrides = Object.values(nodesById)
+    .filter((n) => n.type === 'INSTANCE' && Array.isArray(n.symbolOverrides) && n.symbolOverrides.length > 0)
+    .sort((a, b) => instanceDepth(b) - instanceDepth(a));
+
+  for (const instance of instancesWithOverrides) {
+    for (const override of instance.symbolOverrides!) {
+      const guids = record(override.guidPath)?.guids;
+      if (!Array.isArray(guids) || !guids.length) continue;
+      const pathGuids = guids.map(guidId).filter((g): g is string => typeof g === 'string');
+      if (!pathGuids.length) continue;
+
+      const target = findOverrideTarget(instance, pathGuids, nodesById);
+      if (target) {
+        const overriddenSymbol = record(override.overriddenSymbolID);
+        if (overriddenSymbol) {
+          const componentId = idFromGuid(overriddenSymbol, target.zIndex);
+          if (target.resolvedComponentId !== componentId) {
+            target.resolvedComponentId = componentId;
+            target.main_component_id = componentId;
+            target.childIds = [];
+            target.resolvedChildIds = undefined;
+            pending.push({ node: target, componentPath: new Set<string>() });
+          }
+        }
+        applyOverride(target, override, assetPaths, resolveVar);
+      }
+    }
+  }
+  expandPending();
+
   return { ...document, nodesById };
+}
+
+function findOverrideTarget(
+  instance: AgentNode,
+  pathGuids: readonly string[],
+  nodesById: Record<string, AgentNode>
+): AgentNode | undefined {
+  if (!pathGuids.length) return undefined;
+
+  const matchesGuid = (node: AgentNode, guid: string): boolean => {
+    return node.overrideKey === guid || node.node_id === guid || node.id === guid;
+  };
+
+  let current = instance;
+  for (let i = 0; i < pathGuids.length; i += 1) {
+    const guid = pathGuids[i]!;
+    const childIds = current.resolvedChildIds ?? current.childIds ?? [];
+
+    let nextNode: AgentNode | undefined;
+    for (const childId of childIds) {
+      const child = nodesById[childId];
+      if (child && matchesGuid(child, guid)) {
+        nextNode = child;
+        break;
+      }
+    }
+
+    if (!nextNode) {
+      const allDescendantIds = resolvedDescendantIds(nodesById, childIds);
+      for (const descId of allDescendantIds) {
+        const desc = nodesById[descId];
+        if (desc && matchesGuid(desc, guid)) {
+          nextNode = desc;
+          break;
+        }
+      }
+    }
+
+    if (!nextNode && i === 0 && pathGuids.length === 1) {
+      if (matchesGuid(current, guid)) return current;
+      if (current.resolvedComponentId) {
+        const comp = nodesById[current.resolvedComponentId];
+        if (comp && matchesGuid(comp, guid)) return current;
+      }
+    }
+
+    if (!nextNode) return undefined;
+    current = nextNode;
+  }
+
+  return current;
+}
+
+function applyOverride(target: AgentNode, override: Record<string, unknown>, assetPaths?: Readonly<Record<string, string>>, resolveVar?: VariableColorResolver): void {
+  if (override.fillPaints !== undefined) {
+    target.fills = resolvePaints(override.fillPaints, resolveVar);
+    if (assetPaths) {
+      target.assetRefs = assetReferences(target.fills, assetPaths);
+    }
+  }
+  if (override.strokePaints !== undefined) {
+    target.strokes = resolvePaints(override.strokePaints, resolveVar);
+  }
+  if (typeof override.strokeWeight === 'number') {
+    target.strokeWeight = override.strokeWeight;
+  }
+  if (typeof override.strokeAlign === 'string') {
+    target.strokeAlign = override.strokeAlign;
+  }
+  if (override.size !== undefined) {
+    target.bounds = override.size;
+  }
+  if (typeof override.visible === 'boolean') {
+    target.visible = override.visible;
+  }
+  if (typeof override.opacity === 'number') {
+    target.opacity = override.opacity;
+  }
+  if (override.effects !== undefined) {
+    target.effects = override.effects;
+  }
+  if (typeof override.cornerRadius === 'number') {
+    target.cornerRadius = override.cornerRadius;
+  }
+  const text = overrideText(override);
+  if (text !== undefined) {
+    target.text = text;
+  }
+  const styles = styleReferences(override);
+  if (styles) {
+    target.styleRefs = { ...target.styleRefs, ...styles };
+  }
+  const bindings = variableBindings(override);
+  if (bindings) {
+    target.variableBindings = bindings;
+  }
 }
 
 function descendantIds(document: AgentDocument, ids: readonly string[]): string[] {
@@ -128,7 +318,7 @@ function resolvedDescendantIds(nodesById: Record<string, AgentNode>, ids: readon
 
 export function resolveNodeReference(document: AgentDocument, reference: string): AgentNode {
   const urlFileKey = fileKeyFromReference(reference);
-  if (urlFileKey && document.originFileKey && urlFileKey !== document.originFileKey) throw new FigctxError('NODE_REFERENCE_FILE_MISMATCH', `Figma URL belongs to ${urlFileKey}, but this bundle is for ${document.originFileKey}.`);
+  if (urlFileKey && document.originFileKey && !document.originFileKey.startsWith('lk-') && urlFileKey !== document.originFileKey) throw new FigctxError('NODE_REFERENCE_FILE_MISMATCH', `Figma URL belongs to ${urlFileKey}, but this bundle is for ${document.originFileKey}.`);
   const id = canonicalNodeId(reference);
   const node = document.nodesById[id];
   if (!node) throw new FigctxError('NODE_NOT_FOUND', `No node matches ${reference}.`);
@@ -138,9 +328,13 @@ export function resolveNodeReference(document: AgentDocument, reference: string)
 export function canonicalNodeId(reference: string): string {
   const raw = reference.includes('://') ? extractUrlNodeId(reference) : reference;
   const decoded = decodeURIComponent(raw).trim();
-  const match = decoded.match(/^(\d+)[-:](\d+)$/);
-  if (!match) throw new FigctxError('NODE_NOT_FOUND', `Invalid node reference: ${reference}`);
-  return `${match[1]}:${match[2]}`;
+  const parts = decoded.split('::');
+  const canonicalParts = parts.map((part) => {
+    const match = part.match(/^(\d+)[-:](\d+)$/);
+    if (!match) throw new FigctxError('NODE_NOT_FOUND', `Invalid node reference: ${reference}`);
+    return `${match[1]}:${match[2]}`;
+  });
+  return canonicalParts.join('::');
 }
 
 function extractUrlNodeId(reference: string): string {
@@ -155,7 +349,7 @@ function fileKeyFromReference(reference: string): string | undefined {
   try { const match = new URL(reference).pathname.match(/\/(?:design|file)\/([^/?#]+)/i); return match?.[1] ? decodeURIComponent(match[1]) : undefined; } catch { return undefined; }
 }
 
-function normalizeNode(change: Record<string, unknown>, zIndex: number, assetPaths: Readonly<Record<string, string>> | undefined, vectorPaths: Readonly<Record<number, string>> | undefined, vectorSvgPaths: Readonly<Record<number, string>> | undefined): AgentNode {
+function normalizeNode(change: Record<string, unknown>, zIndex: number, assetPaths: Readonly<Record<string, string>> | undefined, vectorPaths: Readonly<Record<number, string>> | undefined, vectorSvgPaths: Readonly<Record<number, string>> | undefined, resolveVar?: VariableColorResolver): AgentNode {
   const id = idFromGuid(change.guid, zIndex);
   const textData = record(change.textData);
   const layoutKeys = ['stackMode', 'stackSpacing', 'stackHorizontalPadding', 'stackVerticalPadding', 'stackPrimaryAlignItems', 'stackCounterAlignItems'];
@@ -163,24 +357,31 @@ function normalizeNode(change: Record<string, unknown>, zIndex: number, assetPat
   const typography = pick(change, typographyKeys);
   const derivedTextData = record(change.derivedTextData);
   const textLayout = derivedTextData ? pick(derivedTextData, ['layoutSize', 'baselines', 'fontMetaData', 'truncationStartIndex', 'truncatedHeight', 'derivedLines']) : undefined;
-  const segments = textSegments(textData, typography, change.fillPaints);
+  const fills = resolvePaints(change.fillPaints, resolveVar);
+  const strokes = resolvePaints(change.strokePaints, resolveVar);
+  const segments = textSegments(textData, typography, fills);
   const styles = styleReferences(change);
   const bindings = variableBindings(change);
   const symbolData = record(change.symbolData);
   const symbolId = record(symbolData?.symbolID);
-  const overrides = Array.isArray(symbolData?.symbolOverrides) ? symbolData.symbolOverrides : [];
+  const overrides = Array.isArray(symbolData?.symbolOverrides) ? (symbolData.symbolOverrides as Array<Record<string, unknown>>) : [];
   const instanceTextOverrides = overrides.flatMap((override) => { const text = overrideText(override); return text === undefined ? [] : [text]; });
   const instanceTextOverridesByNodeId = Object.fromEntries(overrides.flatMap((override) => {
     const targetId = overrideTargetId(override); const text = overrideText(override);
     return targetId && text !== undefined ? [[targetId, text]] : [];
   }));
+  const overrideKey = guidId(change.overrideKey);
   return {
     id, node_id: id, name: typeof change.name === 'string' ? change.name : id, type: typeof change.type === 'string' ? change.type : 'UNKNOWN', childIds: [], zIndex,
-    ...(symbolId ? { resolvedComponentId: idFromGuid(symbolId, zIndex), main_component_id: guidId(symbolId), instanceTextOverrides, ...(Object.keys(instanceTextOverridesByNodeId).length ? { instanceTextOverridesByNodeId } : {}) } : {}),
+    ...(Array.isArray(change.componentPropAssignments) ? { componentPropAssignments: change.componentPropAssignments } : {}),
+    ...(Array.isArray(change.componentPropRefs) ? { componentPropRefs: change.componentPropRefs } : {}),
+    ...(symbolId ? { resolvedComponentId: idFromGuid(symbolId, zIndex), main_component_id: guidId(symbolId), instanceTextOverrides, ...(Object.keys(instanceTextOverridesByNodeId).length ? { instanceTextOverridesByNodeId } : {}), ...(overrides.length ? { symbolOverrides: overrides } : {}) } : {}),
+    ...(overrideKey ? { overrideKey } : {}),
     ...(typeof textData?.characters === 'string' ? { text: textData.characters } : {}), ...(segments ? { textSegments: segments } : {}), ...(textLayout && Object.keys(textLayout).length ? { textLayout } : {}),
     ...(change.size === undefined ? {} : { bounds: change.size }), ...(change.transform === undefined ? {} : { transform: change.transform }),
-    ...(typeof change.visible === 'boolean' ? { visible: change.visible } : {}), ...(typeof change.opacity === 'number' ? { opacity: change.opacity } : {}), ...(change.blendMode === undefined ? {} : { blendMode: change.blendMode }), ...(typeof change.mask === 'boolean' ? { mask: change.mask } : {}), ...(typeof change.frameMaskDisabled === 'boolean' ? { frameMaskDisabled: change.frameMaskDisabled } : {}), constraints: { horizontal: change.horizontalConstraint, vertical: change.verticalConstraint },
-    layout: pick(change, layoutKeys), fills: change.fillPaints, strokes: change.strokePaints, effects: change.effects, typography, ...(styles ? { styleRefs: styles } : {}), ...(bindings ? { variableBindings: bindings } : {}), assetRefs: assetReferences(change.fillPaints, assetPaths), ...(vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) ? { vectorRef: vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) } : {})
+    ...(typeof change.visible === 'boolean' ? { visible: change.visible } : {}), ...(typeof change.opacity === 'number' ? { opacity: change.opacity } : {}), ...(change.blendMode === undefined ? {} : { blendMode: change.blendMode }), ...(typeof change.mask === 'boolean' ? { mask: change.mask } : {}), ...(typeof change.frameMaskDisabled === 'boolean' ? { frameMaskDisabled: change.frameMaskDisabled } : {}), ...(typeof change.resizeToFit === 'boolean' ? { resizeToFit: change.resizeToFit } : {}), constraints: { horizontal: change.horizontalConstraint, vertical: change.verticalConstraint },
+    layout: pick(change, layoutKeys), fills, strokes, ...(typeof change.strokeWeight === 'number' ? { strokeWeight: change.strokeWeight } : {}), ...(typeof change.strokeCap === 'string' ? { strokeCap: change.strokeCap } : {}), ...(typeof change.strokeJoin === 'string' ? { strokeJoin: change.strokeJoin } : {}), ...(typeof change.strokeAlign === 'string' ? { strokeAlign: change.strokeAlign } : {}), ...(typeof change.cornerRadius === 'number' ? { cornerRadius: change.cornerRadius } : {}), effects: change.effects, typography, ...(styles ? { styleRefs: styles } : {}), ...(bindings ? { variableBindings: bindings } : {}), assetRefs: assetReferences(fills, assetPaths), ...(vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) ? { vectorRef: vectorReference(change.vectorData, vectorPaths, vectorSvgPaths) } : {}),
+    ...(typeof change.sourceLibraryKey === 'string' ? { sourceLibraryKey: change.sourceLibraryKey } : {}), ...(typeof change.componentKey === 'string' ? { componentKey: change.componentKey } : {})
   };
 }
 
@@ -260,3 +461,63 @@ function overrideText(value: unknown): string | undefined {
 }
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function pick(value: Record<string, unknown>, keys: string[]): Record<string, unknown> { return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]])); }
+
+export function buildVariableColorResolver(
+  changes: readonly Record<string, unknown>[]
+): VariableColorResolver {
+  const varByKey = new Map<string, Record<string, unknown>>();
+  const varByVersion = new Map<string, Record<string, unknown>>();
+
+  for (const c of changes) {
+    if (c.type === 'VARIABLE') {
+      if (typeof c.key === 'string') varByKey.set(c.key, c);
+      if (typeof c.version === 'string') varByVersion.set(c.version, c);
+    }
+  }
+
+  const resolve = (ref: unknown, depth = 0): { r: number; g: number; b: number; a?: number } | undefined => {
+    if (depth > 10 || !ref || typeof ref !== 'object') return undefined;
+    const r = ref as Record<string, unknown>;
+    const key = typeof r.key === 'string' ? r.key : undefined;
+    const version = typeof r.version === 'string' ? r.version : undefined;
+    const v = (key ? varByKey.get(key) : undefined) ?? (version ? varByVersion.get(version) : undefined);
+    if (!v) return undefined;
+    const entries = record(v.variableDataValues)?.entries;
+    if (!Array.isArray(entries) || !entries.length) return undefined;
+    const data = record(record(entries[0])?.variableData);
+    if (!data) return undefined;
+    if (data.dataType === 'COLOR') {
+      const color = record(record(data.value)?.colorValue);
+      if (color && typeof color.r === 'number' && typeof color.g === 'number' && typeof color.b === 'number') {
+        return { r: color.r, g: color.g, b: color.b, ...(typeof color.a === 'number' ? { a: color.a } : {}) };
+      }
+    }
+    if (data.dataType === 'ALIAS') {
+      const aliasRef = record(record(data.value)?.alias)?.assetRef;
+      if (aliasRef) return resolve(aliasRef, depth + 1);
+    }
+    return undefined;
+  };
+
+  return resolve;
+}
+
+export function resolvePaints(
+  paints: unknown,
+  resolveVar?: VariableColorResolver
+): unknown {
+  if (!Array.isArray(paints) || !resolveVar) return paints;
+  return paints.map((p) => {
+    if (!p || typeof p !== 'object') return p;
+    const paintObj = p as Record<string, unknown>;
+    const colorVar = record(paintObj.colorVar);
+    const assetRef = record(record(colorVar?.value)?.alias)?.assetRef;
+    if (assetRef) {
+      const resolved = resolveVar(assetRef);
+      if (resolved) {
+        return { ...paintObj, color: resolved };
+      }
+    }
+    return p;
+  });
+}

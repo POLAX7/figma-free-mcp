@@ -10,6 +10,59 @@ const document = normalizeDocument([
 ]);
 
 describe('normalized document', () => {
+  test('expands an overridden child instance to its swapped component', () => {
+    const document = {
+      contractVersion: '1' as const,
+      rootIds: ['1:1'],
+      nodesById: {
+        '1:1': {
+          id: '1:1', name: 'Navigation instance', type: 'INSTANCE', childIds: [], zIndex: 0,
+          assetRefs: [], resolvedComponentId: '1:10',
+          symbolOverrides: [{
+            overriddenSymbolID: { sessionID: 2, localID: 20 },
+            guidPath: { guids: [{ sessionID: 9, localID: 99 }] }
+          }]
+        },
+        '1:10': { id: '1:10', name: 'Navigation', type: 'SYMBOL', childIds: ['1:11'], zIndex: 1, assetRefs: [] },
+        '1:11': { id: '1:11', name: 'Trailing Button', type: 'INSTANCE', childIds: [], zIndex: 2, assetRefs: [], resolvedComponentId: '1:20', node_id: '1:11', overrideKey: '9:99' },
+        '1:20': { id: '1:20', name: 'X', type: 'SYMBOL', childIds: [], zIndex: 3, assetRefs: [] },
+        '2:20': { id: '2:20', name: 'Trash', type: 'SYMBOL', childIds: [], zIndex: 4, assetRefs: [] }
+      }
+    };
+
+    const expanded = expandLocalInstances(document);
+    const trailingButton = expanded.nodesById['1:1::1:11'];
+
+    expect(trailingButton?.resolvedComponentId).toBe('2:20');
+    expect(trailingButton?.main_component_id).toBe('2:20');
+  });
+
+  test('replaces the base child in an already expanded instance', () => {
+    const document = {
+      contractVersion: '1' as const,
+      rootIds: ['1:1'],
+      nodesById: {
+        '1:1': {
+          id: '1:1', name: 'Navigation instance', type: 'INSTANCE', childIds: [], zIndex: 0,
+          assetRefs: [], resolvedComponentId: '1:10', resolvedChildIds: ['1:1::1:11'],
+          symbolOverrides: [{
+            overriddenSymbolID: { sessionID: 2, localID: 20 },
+            guidPath: { guids: [{ sessionID: 9, localID: 99 }] }
+          }]
+        },
+        '1:10': { id: '1:10', name: 'Navigation', type: 'SYMBOL', childIds: ['1:11'], zIndex: 1, assetRefs: [] },
+        '1:11': { id: '1:11', name: 'Trailing Button', type: 'INSTANCE', childIds: [], zIndex: 2, assetRefs: [], resolvedComponentId: '1:20', node_id: '1:11', overrideKey: '9:99' },
+        '1:20': { id: '1:20', name: 'X', type: 'SYMBOL', childIds: [], zIndex: 3, assetRefs: [] },
+        '2:20': { id: '2:20', name: 'Trash', type: 'SYMBOL', childIds: [], zIndex: 4, assetRefs: [] },
+        '1:1::1:11': { id: '1:1::1:11', name: 'Trailing Button', type: 'INSTANCE', childIds: [], zIndex: 2, assetRefs: [], resolvedComponentId: '1:20', main_component_id: '1:20', node_id: '1:11', overrideKey: '9:99', parentId: '1:1' }
+      }
+    };
+
+    const expanded = expandLocalInstances(document);
+
+    expect(expanded.nodesById['1:1::1:11']?.resolvedComponentId).toBe('2:20');
+  });
+
   test('exposes stable component metadata and resolved child access', () => {
     const normalized = normalizeDocument([
       { guid: { sessionID: 10, localID: 1 }, type: 'INSTANCE', name: 'Alert', symbolData: { symbolID: { sessionID: 20, localID: 1 } } },
@@ -117,6 +170,18 @@ describe('normalized document', () => {
   test.each(['1:3', '1-3', 'https://www.figma.com/design/file/name?node-id=1-3'])
   ('resolves %s', (reference) => expect(resolveNodeReference(document, reference).id).toBe('1:3'));
 
+  test('resolves expanded instance child reference with ::', () => {
+    const doc = {
+      contractVersion: '1' as const,
+      rootIds: ['1:1'],
+      nodesById: {
+        '1:1::1:2': { id: '1:1::1:2', name: 'Child', type: 'RECTANGLE', childIds: [], zIndex: 0, assetRefs: [] }
+      }
+    };
+    expect(resolveNodeReference(doc, '1:1::1:2').id).toBe('1:1::1:2');
+    expect(resolveNodeReference(doc, '1-1::1-2').id).toBe('1:1::1:2');
+  });
+
   test('rejects a Figma URL for another file key', () => {
     const keyed = normalizeDocument([], { originFileKey: 'local-file' });
     expect(() => resolveNodeReference(keyed, 'https://www.figma.com/design/other-file/name?node-id=1-3')).toThrow(/bundle is for local-file/);
@@ -158,11 +223,11 @@ describe('normalized document', () => {
     });
   });
 
-  test('does not list a group whose vector SVG fragments are unavailable', () => {
+  test('does not list a group without a vector asset reference', () => {
     const normalized = normalizeDocument([
       { guid: { sessionID: 8, localID: 1 }, type: 'FRAME', size: { x: 20, y: 10 } },
       { guid: { sessionID: 8, localID: 2 }, type: 'VECTOR', parentIndex: 0, size: { x: 20, y: 10 }, vectorData: { vectorNetworkBlob: 1 } }
-    ], { vectorPaths: { 1: 'assets/vectors/vector-network-1.bin.gz' } });
+    ]);
 
     expect(buildNodeContext(normalized, normalized.nodesById['8:1']!).vectorGroups).toEqual([]);
   });
@@ -200,5 +265,147 @@ describe('normalized document', () => {
   test('retains mask and frame clipping flags for SVG composition', () => {
     const normalized = normalizeDocument([{ guid: { sessionID: 6, localID: 1 }, type: 'FRAME', mask: true, frameMaskDisabled: false }]);
     expect(normalized.nodesById['6:1']).toMatchObject({ mask: true, frameMaskDisabled: false });
+  });
+
+  test('preserves sourceLibraryKey and componentKey from external library components', () => {
+    const normalized = normalizeDocument([
+      {
+        guid: { sessionID: 1, localID: 10 },
+        type: 'SYMBOL',
+        name: 'External Icon',
+        sourceLibraryKey: 'lk-external-library-key',
+        componentKey: 'comp-uuid-12345'
+      }
+    ]);
+    expect(normalized.nodesById['1:10']).toMatchObject({
+      sourceLibraryKey: 'lk-external-library-key',
+      componentKey: 'comp-uuid-12345'
+    });
+  });
+
+  test('applies symbolOverrides for fills, strokes, and size to matched descendant by overrideKey', () => {
+    const normalized = normalizeDocument([
+      {
+        guid: { sessionID: 1522, localID: 58069 },
+        type: 'INSTANCE',
+        name: 'Star',
+        symbolData: {
+          symbolID: { sessionID: 40, localID: 13664 },
+          symbolOverrides: [
+            {
+              guidPath: { guids: [{ sessionID: 101, localID: 15797 }] },
+              fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0.823529, b: 0.039215 }, visible: true }],
+              strokePaints: [{ type: 'SOLID', color: { r: 1, g: 0.647058, b: 0.270588 }, visible: true }]
+            }
+          ]
+        }
+      },
+      {
+        guid: { sessionID: 40, localID: 13664 },
+        type: 'SYMBOL',
+        name: 'Star Component',
+        overrideKey: { sessionID: 101, localID: 15796 }
+      },
+      {
+        guid: { sessionID: 40, localID: 13665 },
+        type: 'VECTOR',
+        name: 'Vector',
+        parentIndex: 1,
+        overrideKey: { sessionID: 101, localID: 15797 },
+        strokePaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 }, visible: true }]
+      }
+    ]);
+
+    const expanded = expandLocalInstances(normalized);
+    const starInstance = expanded.nodesById['1522:58069']!;
+    expect(starInstance.resolvedChildIds).toHaveLength(1);
+    const childVector = expanded.nodesById[starInstance.resolvedChildIds![0]!]!;
+    expect(childVector.name).toBe('Vector');
+    expect(childVector.fills).toEqual([
+      { type: 'SOLID', color: { r: 1, g: 0.823529, b: 0.039215 }, visible: true }
+    ]);
+    expect(childVector.strokes).toEqual([
+      { type: 'SOLID', color: { r: 1, g: 0.647058, b: 0.270588 }, visible: true }
+    ]);
+  });
+
+  test('resolves colorVar variable aliases in fills and strokes to true color value', () => {
+    const normalized = normalizeDocument([
+      {
+        guid: { sessionID: 1522, localID: 58065 },
+        type: 'INSTANCE',
+        name: 'Star Disabled',
+        symbolData: {
+          symbolID: { sessionID: 40, localID: 13664 },
+          symbolOverrides: [
+            {
+              guidPath: { guids: [{ sessionID: 101, localID: 15797 }] },
+              fillPaints: [{
+                type: 'SOLID',
+                color: { r: 0.85, g: 0.85, b: 0.85 },
+                colorVar: { value: { alias: { assetRef: { key: 'white-var-key', version: '990:1339' } } }, dataType: 'ALIAS', resolvedDataType: 'COLOR' }
+              }],
+              strokePaints: [{
+                type: 'SOLID',
+                color: { r: 0.5, g: 0.5, b: 0.5 },
+                colorVar: { value: { alias: { assetRef: { key: 'orange-var-key', version: '997:69' } } }, dataType: 'ALIAS', resolvedDataType: 'COLOR' }
+              }]
+            }
+          ]
+        }
+      },
+      {
+        guid: { sessionID: 40, localID: 13664 },
+        type: 'SYMBOL',
+        overrideKey: { sessionID: 101, localID: 15796 }
+      },
+      {
+        guid: { sessionID: 40, localID: 13665 },
+        type: 'VECTOR',
+        name: 'Vector',
+        parentIndex: 1,
+        overrideKey: { sessionID: 101, localID: 15797 }
+      },
+      {
+        guid: { sessionID: 9, localID: 1 },
+        type: 'VARIABLE',
+        name: 'Color/Icon/inverse',
+        key: 'white-var-key',
+        version: '990:1339',
+        variableResolvedType: 'COLOR',
+        variableDataValues: {
+          entries: [{ modeID: { sessionID: 95, localID: 0 }, variableData: { value: { alias: { assetRef: { key: 'base-white-key' } } }, dataType: 'ALIAS', resolvedDataType: 'COLOR' } }]
+        }
+      },
+      {
+        guid: { sessionID: 9, localID: 2 },
+        type: 'VARIABLE',
+        name: 'System/Base/White',
+        key: 'base-white-key',
+        variableResolvedType: 'COLOR',
+        variableDataValues: {
+          entries: [{ modeID: { sessionID: 95, localID: 0 }, variableData: { value: { colorValue: { r: 1, g: 1, b: 1, a: 1 } }, dataType: 'COLOR', resolvedDataType: 'COLOR' } }]
+        }
+      },
+      {
+        guid: { sessionID: 9, localID: 3 },
+        type: 'VARIABLE',
+        name: 'System/Secondary/Orange/400',
+        key: 'orange-var-key',
+        version: '997:69',
+        variableResolvedType: 'COLOR',
+        variableDataValues: {
+          entries: [{ modeID: { sessionID: 95, localID: 0 }, variableData: { value: { colorValue: { r: 1, g: 0.7137, b: 0.4118, a: 1 } }, dataType: 'COLOR', resolvedDataType: 'COLOR' } }]
+        }
+      }
+    ]);
+
+    const expanded = expandLocalInstances(normalized);
+    const star = expanded.nodesById['1522:58065']!;
+    const vector = expanded.nodesById[star.resolvedChildIds![0]!]!;
+    const fills = vector.fills as Array<{ color: { r: number; g: number; b: number } }>;
+    const strokes = vector.strokes as Array<{ color: { r: number; g: number; b: number } }>;
+    expect(fills[0]!.color).toEqual({ r: 1, g: 1, b: 1, a: 1 });
+    expect(strokes[0]!.color).toEqual({ r: 1, g: 0.7137, b: 0.4118, a: 1 });
   });
 });

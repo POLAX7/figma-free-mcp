@@ -29,5 +29,5 @@ export function buildNodeContext(document: AgentDocument, node: AgentNode): Node
 function unique<T>(items: readonly T[], key: (item: T) => string): T[] { const seen = new Set<string>(); return items.filter((item) => { const value = key(item); if (seen.has(value)) return false; seen.add(value); return true; }); }
 function hasSvgFragments(document: AgentDocument, nodeId: string): boolean {
   const node = document.nodesById[nodeId];
-  return Boolean(node) && (!node.vectorRef || Boolean(node.vectorRef.svgPath)) && effectiveChildIds(node).every((childId) => hasSvgFragments(document, childId));
+  return Boolean(node) && (!node.vectorRef || Boolean(node.vectorRef.svgPath || node.vectorRef.path)) && effectiveChildIds(node).every((childId) => hasSvgFragments(document, childId));
 }

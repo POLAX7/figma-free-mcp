@@ -37,7 +37,6 @@ test('returns a bounded safe node summary in child order', () => {
   expect(JSON.stringify(result)).not.toContain('a'.repeat(40));
   expect(JSON.stringify(result)).not.toContain('vector-network-7.bin.gz');
 });
-
 test('uses bounded defaults and clamps oversized limits', () => {
   expect(inspectNode(document, document.nodesById['1:1']!).limits).toEqual({ depth: 2, maxChildren: 20 });
   expect(inspectNode(document, document.nodesById['1:1']!, { depth: 99, maxChildren: 999 }).limits).toEqual({ depth: 5, maxChildren: 100 });
@@ -66,3 +65,79 @@ test('caps the complete summary at 1000 nodes', () => {
 function countNodes(node: InspectedNode): number {
   return 1 + node.children.reduce((total, child) => total + countNodes(child), 0);
 }
+
+test('exposes sourceLibraryKey and componentKey on component nodes', () => {
+  const doc: AgentDocument = {
+    contractVersion: '1',
+    rootIds: ['1:1'],
+    nodesById: {
+      '1:1': {
+        id: '1:1',
+        name: 'IconInstance',
+        type: 'INSTANCE',
+        childIds: [],
+        zIndex: 0,
+        assetRefs: [],
+        sourceLibraryKey: 'lk-ds-lib',
+        componentKey: 'icon-star-key',
+        main_component_id: '99:1'
+      }
+    }
+  };
+
+  const result = inspectNode(doc, doc.nodesById['1:1']!);
+  expect(result.selection.component).toEqual({
+    type: 'INSTANCE',
+    mainComponentId: '99:1',
+    expanded: false,
+    sourceLibraryKey: 'lk-ds-lib',
+    componentKey: 'icon-star-key'
+  });
+});
+
+test('inherits componentKey and sourceLibraryKey from master SYMBOL on an INSTANCE', () => {
+  const doc: AgentDocument = {
+    contractVersion: '1',
+    rootIds: ['1:1'],
+    nodesById: {
+      '1:1': {
+        id: '1:1',
+        name: 'InstanceWithoutOwnKeys',
+        type: 'INSTANCE',
+        childIds: [],
+        zIndex: 0,
+        assetRefs: [],
+        main_component_id: '99:1'
+      },
+      '99:1': {
+        id: '99:1',
+        name: 'MasterSymbol',
+        type: 'SYMBOL',
+        childIds: [],
+        zIndex: 0,
+        assetRefs: [],
+        sourceLibraryKey: 'lk-team-lib',
+        componentKey: 'comp-master-key'
+      }
+    }
+  };
+
+  // Inspect instance
+  const instanceResult = inspectNode(doc, doc.nodesById['1:1']!);
+  expect(instanceResult.selection.component).toEqual({
+    type: 'INSTANCE',
+    mainComponentId: '99:1',
+    expanded: false,
+    sourceLibraryKey: 'lk-team-lib',
+    componentKey: 'comp-master-key'
+  });
+
+  // Inspect symbol directly
+  const symbolResult = inspectNode(doc, doc.nodesById['99:1']!);
+  expect(symbolResult.selection.component).toEqual({
+    type: 'SYMBOL',
+    expanded: false,
+    sourceLibraryKey: 'lk-team-lib',
+    componentKey: 'comp-master-key'
+  });
+});

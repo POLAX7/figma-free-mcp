@@ -12,7 +12,7 @@ export interface InspectedNode {
   typography?: Record<string, unknown>;
   visible?: boolean;
   opacity?: number;
-  component: { type: string; mainComponentId?: string; expanded: boolean } | null;
+  component: { type: string; mainComponentId?: string; expanded: boolean; sourceLibraryKey?: string; componentKey?: string } | null;
   assets: { imageFillCount: number; hasVector: boolean };
   childCount: number;
   children: InspectedNode[];
@@ -24,7 +24,6 @@ export interface NodeInspection {
   selection: InspectedNode;
   omitted: string[];
 }
-
 const defaultLimits: InspectNodeLimits = { depth: 2, maxChildren: 20 };
 const maxDepth = 5;
 const maxChildren = 100;
@@ -56,6 +55,7 @@ function limit(value: number | undefined, fallback: number, maximum: number): nu
 
 function inspect(document: AgentDocument, node: AgentNode, depth: number, childLimit: number, depthLimit: number, state: { remainingNodes: number; omitted: string[] }): InspectedNode {
   state.remainingNodes -= 1;
+  if (node.resolutionError) state.omitted.push(node.resolutionError);
   const sourceChildIds = effectiveChildIds(node);
   const childIds = sourceChildIds.slice(0, childLimit);
   if (sourceChildIds.length > childIds.length) state.omitted.push(`node ${node.id}: ${sourceChildIds.length - childIds.length} children omitted by maxChildren limit (${childLimit})`);
@@ -69,6 +69,10 @@ function inspect(document: AgentDocument, node: AgentNode, depth: number, childL
     const child = document.nodesById[childIds[index]!];
     if (child) children.push(inspect(document, child, depth - 1, childLimit, depthLimit, state));
   }
+  const master = node.main_component_id ? document.nodesById[node.main_component_id] : (node.resolvedComponentId ? document.nodesById[node.resolvedComponentId] : undefined);
+  const sourceLibraryKey = node.sourceLibraryKey ?? master?.sourceLibraryKey;
+  const componentKey = node.componentKey ?? master?.componentKey;
+
   return {
     id: node.id,
     name: node.name,
@@ -79,7 +83,7 @@ function inspect(document: AgentDocument, node: AgentNode, depth: number, childL
     ...(node.typography === undefined ? {} : { typography: node.typography }),
     ...(node.visible === undefined ? {} : { visible: node.visible }),
     ...(node.opacity === undefined ? {} : { opacity: node.opacity }),
-    component: isComponent(node) ? { type: node.type, ...(node.main_component_id ? { mainComponentId: node.main_component_id } : {}), expanded: Boolean(node.resolvedChildIds) } : null,
+    component: isComponent(node) ? { type: node.type, ...(node.main_component_id ? { mainComponentId: node.main_component_id } : {}), expanded: Boolean(node.resolvedChildIds), ...(sourceLibraryKey ? { sourceLibraryKey } : {}), ...(componentKey ? { componentKey } : {}) } : null,
     assets: { imageFillCount: node.assetRefs.length, hasVector: Boolean(node.vectorRef) },
     childCount: sourceChildIds.length,
     children
@@ -87,5 +91,5 @@ function inspect(document: AgentDocument, node: AgentNode, depth: number, childL
 }
 
 function isComponent(node: AgentNode): boolean {
-  return node.type === 'COMPONENT' || node.type === 'COMPONENT_SET' || node.type === 'INSTANCE';
+  return node.type === 'COMPONENT' || node.type === 'COMPONENT_SET' || node.type === 'INSTANCE' || node.type === 'SYMBOL';
 }
