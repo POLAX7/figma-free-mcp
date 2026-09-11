@@ -302,3 +302,42 @@ test('preserves standalone segments outside filled region loops', () => {
   expect(svg).toContain('M 2 2 L 2 8');
   expect(svg).toContain('M 8 2 L 8 8');
 });
+
+test('generates geometric rounded corners with arc commands when vector has corner radius', () => {
+  const bytes = new Uint8Array(12 + 4 * 12 + 4 * 28 + 8 + 4 + 4 * 4);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  const vertices = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  for (const [x, y] of vertices) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, x, true); offset += 4;
+    view.setFloat32(offset, y, true); offset += 4;
+  }
+  const segments = [[0, 1], [1, 2], [2, 3], [3, 0]];
+  for (const [start, end] of segments) {
+    view.setUint32(offset, 0, true); offset += 4;
+    view.setUint32(offset, start, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setUint32(offset, end, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+    view.setFloat32(offset, 0, true); offset += 4;
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 4, true); offset += 4;
+  for (const index of [0, 1, 2, 3]) { view.setUint32(offset, index, true); offset += 4; }
+
+  const svg = vectorNetworkToSvg(bytes, { x: 10, y: 10 }, {
+    strokes: [{}],
+    strokeWeight: 1,
+    cornerRadius: 2
+  });
+  expect(svg).toBeDefined();
+  expect(svg).toContain('A 2 2 0 0 1');
+  expect(svg).toContain('M 2 0');
+});
+
